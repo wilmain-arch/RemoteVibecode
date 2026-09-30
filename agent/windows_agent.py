@@ -13,7 +13,6 @@ import os
 from pathlib import Path
 import re
 import secrets
-import shutil
 import socket
 import ssl
 import sys
@@ -28,6 +27,7 @@ import qrcode
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from bridge import server as bridge_server
+from bridge.codex_path import resolve_codex_executable
 
 
 APP_NAME = "RemoteVibecode"
@@ -70,7 +70,7 @@ def setup(path: Path) -> None:
     data = {"relayHost": host, "relayFingerprint": fingerprint,
             "relaySecret": secret, "publicPort": 8765, "controlPort": 8766,
             "dataPort": 8767, "bridgePort": 18765,
-            "codexExecutable": shutil.which("codex") or ""}
+            "codexExecutable": ""}
     path.parent.mkdir(parents=True, exist_ok=True)
     # The file contains the relay secret; protect it on Linux as well as Windows.
     validated = load_config_from_dict(data)
@@ -297,11 +297,9 @@ def run_agent(config_path: Path, status=None, open_pairing=True, stop=None) -> N
     directory.mkdir(parents=True, exist_ok=True)
     cert, key, bridge_fingerprint = ensure_certificate(directory)
     pin = f"{secrets.randbelow(100_000_000):08d}"
-    desktop_codex = Path("/usr/lib/chatgpt/resources/codex")
-    codex_executable = (config.get("codexExecutable") or shutil.which("codex")
-                        or (str(desktop_codex) if desktop_codex.is_file() else None))
+    codex_executable = resolve_codex_executable(config.get("codexExecutable"))
     if not codex_executable:
-        raise RuntimeError("Codex CLI не найден. Установите Codex на ПК и укажите путь в настройках")
+        raise RuntimeError("Codex не найден. Установите Codex Desktop или CLI либо укажите путь в настройках")
     os.environ["CODEX_EXECUTABLE"] = codex_executable
     bridge_args = ["--thread", "draft-default", "--bind", "127.0.0.1",
                    "--port", str(config["bridgePort"]), "--pin", pin,

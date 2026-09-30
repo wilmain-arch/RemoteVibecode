@@ -402,7 +402,8 @@ class AgentWindow:
             ("relayHost", "Адрес вашего сервера", "Домен или IPv4 без порта", False),
             ("relayFingerprint", "SHA-256 отпечаток сертификата", "64 шестнадцатеричных символа", False),
             ("relaySecret", "Секрет сервера", "Из /etc/remotevibecode/relay-secret", True),
-            ("codexExecutable", "Путь к Codex CLI", "Например, C:\\Users\\...\\codex.exe", False),
+            ("codexExecutable", "Исполняемый файл Codex",
+             "Пусто — Codex Desktop, затем CLI", False),
         ]
         for key, label, hint, secret in fields:
             self.text(card, label, 12, WHITE, "bold").pack(anchor="w", pady=(0, 5))

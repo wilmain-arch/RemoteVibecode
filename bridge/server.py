@@ -16,7 +16,6 @@ import mimetypes
 import queue
 import re
 import secrets
-import shutil
 import ssl
 import subprocess
 import threading
@@ -50,12 +49,10 @@ SAFE_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f\x7f]+')
 
 class CodexRpc:
     def __init__(self, on_event=None) -> None:
-        desktop_codex = Path("/usr/lib/chatgpt/resources/codex")
-        executable = os.environ.get("CODEX_EXECUTABLE")
+        from bridge.codex_path import resolve_codex_executable
+        executable = resolve_codex_executable(os.environ.get("CODEX_EXECUTABLE"))
         if not executable:
-            executable = str(desktop_codex) if desktop_codex.is_file() else shutil.which("codex")
-        if not executable:
-            raise RuntimeError("Не найден Codex CLI/app-server")
+            raise RuntimeError("Не найден исполняемый файл Codex Desktop или CLI")
         app_server_args = ["app-server", "--listen", "stdio://"] if sys.platform == "win32" else ["app-server", "--stdio"]
         self.proc = subprocess.Popen(
             [executable, *app_server_args],

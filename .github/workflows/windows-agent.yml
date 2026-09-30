@@ -57,5 +57,5 @@ jobs:
           release/RemoteVibecodeAgent.exe
           --repo "${{ github.repository }}"
           --title "RemoteVibecode agent ${{ github.ref_name }}"
-          --notes "Preview Windows agent. Requires a self-hosted RemoteVibecode relay and Codex CLI on the PC. See agent/README.md."
+          --notes "Preview Windows agent. Requires a self-hosted RemoteVibecode relay and Codex Desktop or CLI on the PC. See agent/README.md."
           --prerelease

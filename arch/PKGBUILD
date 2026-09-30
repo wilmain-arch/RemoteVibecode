@@ -18,6 +18,7 @@ package() {
     install -Dm644 "$srcdir/remotevibecode-source/agent/dashboard.py" "$appdir/agent/dashboard.py"
     install -Dm644 "$srcdir/remotevibecode-source/agent/remotevibecode.ico" "$appdir/agent/remotevibecode.ico"
     install -Dm644 "$srcdir/remotevibecode-source/bridge/__init__.py" "$appdir/bridge/__init__.py"
+    install -Dm644 "$srcdir/remotevibecode-source/bridge/codex_path.py" "$appdir/bridge/codex_path.py"
     install -Dm644 "$srcdir/remotevibecode-source/bridge/server.py" "$appdir/bridge/server.py"
     install -Dm644 "$srcdir/remotevibecode-source/bridge/adb_devices.py" "$appdir/bridge/adb_devices.py"
     install -Dm755 "$srcdir/remotevibecode-source/arch/remotevibecode-agent" "$pkgdir/usr/bin/remotevibecode-agent"
