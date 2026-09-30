@@ -1,6 +1,6 @@
 # Maintainer: wilmain <https://github.com/wilmain-arch>
 pkgname=remotevibecode-agent
-pkgver=0.1.8
+pkgver=0.1.9
 pkgrel=1
 pkgdesc='Графический агент RemoteVibecode для подключения ПК к своему ретранслятору'
 arch=('any')

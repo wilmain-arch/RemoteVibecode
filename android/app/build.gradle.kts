@@ -12,8 +12,8 @@ android {
         applicationId = "ru.wilmain.codexphone"
         minSdk = 26
         targetSdk = 35
-        versionCode = 26
-        versionName = "0.9.11"
+        versionCode = 27
+        versionName = "0.9.12"
     }
 
     flavorDimensions += "connection"

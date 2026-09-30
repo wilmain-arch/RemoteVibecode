@@ -4,6 +4,8 @@ import android.text.format.DateUtils
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,6 +15,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -50,6 +53,8 @@ internal fun ProjectsScreen(
     usageLimits: UsageLimits?, limitsLoading: Boolean, limitsError: String,
     onClose: () -> Unit, onSelectThread: (String) -> Unit,
     onDeleteThread: (String) -> Unit,
+    onMoveThread: (String, String) -> Unit,
+    actionError: String,
     onNewChat: (String?) -> Unit, onRefreshCatalog: () -> Unit,
     onRefreshLimits: () -> Unit,
     onDevices: () -> Unit,
@@ -64,6 +69,7 @@ internal fun ProjectsScreen(
     BackHandler(onBack = onClose)
     var search by remember { mutableStateOf("") }
     var deleteCandidate by remember { mutableStateOf<ThreadItem?>(null) }
+    var moveCandidate by remember { mutableStateOf<ThreadItem?>(null) }
     val expanded = remember { mutableStateMapOf<String, Boolean>() }
     deleteCandidate?.let { thread ->
         AlertDialog(
@@ -75,6 +81,27 @@ internal fun ProjectsScreen(
                 onDeleteThread(thread.id)
             }) { Text("Удалить", color = MaterialTheme.colorScheme.error) } },
             dismissButton = { TextButton(onClick = { deleteCandidate = null }) { Text("Отмена") } },
+        )
+    }
+    moveCandidate?.let { thread ->
+        AlertDialog(
+            onDismissRequest = { moveCandidate = null },
+            title = { Text("Переместить чат") },
+            text = {
+                Column(Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState())) {
+                    (projects.filter { it.id != "other" }.map { it.id to it.name } +
+                        ("" to "Без проекта")).forEach { (id, name) ->
+                        TextButton(onClick = {
+                            moveCandidate = null
+                            onMoveThread(thread.id, id)
+                        }, modifier = Modifier.fillMaxWidth()) {
+                            Text(name, modifier = Modifier.fillMaxWidth())
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { moveCandidate = null }) { Text("Отмена") } },
         )
     }
     fun threadTime(value: Long): String = if (value <= 0) "" else
@@ -121,6 +148,10 @@ internal fun ProjectsScreen(
                         }
                     })
             }
+            if (actionError.isNotBlank()) Text(actionError,
+                Modifier.padding(horizontal = 22.dp, vertical = 4.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error)
             Surface(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 4.dp),
                 color = MaterialTheme.colorScheme.surfaceVariant,
                 shape = RoundedCornerShape(18.dp)) {
@@ -216,6 +247,11 @@ internal fun ProjectsScreen(
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
+                                TextButton(onClick = { moveCandidate = thread },
+                                    modifier = Modifier.size(48.dp).semantics {
+                                        contentDescription = "Переместить чат: ${thread.title}"
+                                    }) { UiGlyph(UiIcon.Folder, size = 18.dp,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                                 TextButton(onClick = { deleteCandidate = thread },
                                     modifier = Modifier.size(48.dp).semantics {
                                         contentDescription = "Удалить чат: ${thread.title}"

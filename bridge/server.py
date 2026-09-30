@@ -169,6 +169,7 @@ class Bridge:
         self.paired = bool(saved.get("paired", False))
         self.selected_thread_id = saved.get("selected_thread_id") or thread_id
         self.draft_threads: dict[str, str | None] = saved.get("draft_threads", {})
+        self.project_overrides: dict[str, str] = saved.get("project_overrides", {})
         if thread_id.startswith("draft-") and thread_id not in self.draft_threads:
             self.draft_threads[thread_id] = str(Path.home())
         self.rpc: CodexRpc | None = None
@@ -331,6 +332,18 @@ class Bridge:
 
     def projects(self) -> dict:
         threads = self.list_threads(limit=500)
+        native_projects = []
+        cursor = None
+        with self.rpc_session() as rpc:
+            while True:
+                params = {"limit": 100, "sortKey": "position"}
+                if cursor:
+                    params["cursor"] = cursor
+                page = rpc.call("project/list", params)
+                native_projects.extend(page.get("data", []))
+                cursor = page.get("nextCursor")
+                if not cursor:
+                    break
         state_path = Path.home() / ".codex" / ".codex-global-state.json"
         try:
             desktop = json.loads(state_path.read_text(encoding="utf-8"))
@@ -339,20 +352,18 @@ class Bridge:
         known = desktop.get("local-projects") or {}
         if not isinstance(known, dict):
             known = {}
-        order = desktop.get("project-order") or []
-        if not isinstance(order, list):
-            order = []
         assignments = desktop.get("thread-project-assignments") or {}
         if not isinstance(assignments, dict):
             assignments = {}
         projectless_ids = set(desktop.get("projectless-thread-ids") or [])
         groups: dict[str, dict] = {}
         roots: dict[str, list[str]] = {}
-        for project_id in [*order, *known.keys()]:
-            if project_id in groups or not isinstance(known.get(project_id), dict):
+        for project in native_projects:
+            project_id = project.get("id")
+            if not isinstance(project_id, str) or not project_id:
                 continue
-            project = known[project_id]
-            project_roots = [path for path in project.get("rootPaths", []) if isinstance(path, str)]
+            project_roots = [root.get("path") for root in project.get("roots", [])
+                             if isinstance(root, dict) and isinstance(root.get("path"), str)]
             roots[project_id] = project_roots
             groups[project_id] = {
                 "id": project_id,
@@ -361,18 +372,58 @@ class Bridge:
                 "threads": [],
             }
         standalone = {"id": "other", "name": "Чаты", "cwd": None, "threads": []}
+        legacy_ids = {}
+        for old_id, old_project in known.items():
+            if not isinstance(old_project, dict):
+                continue
+            old_roots = set(old_project.get("rootPaths") or [])
+            legacy_ids[old_id] = next((id for id, paths in roots.items()
+                if old_project.get("name") == groups[id]["name"] and old_roots.intersection(paths)), None)
         for thread in threads:
             thread_id = thread["id"]
             assignment = assignments.get(thread_id) or {}
-            project_id = thread.get("projectId") or assignment.get("projectId")
-            if thread_id in projectless_ids:
+            native_id = thread.get("projectId")
+            if native_id in groups:
+                project_id = native_id
+            elif thread_id in self.project_overrides:
+                project_id = self.project_overrides[thread_id]
+            else:
+                project_id = legacy_ids.get(assignment.get("projectId"))
+            if thread_id in projectless_ids and not native_id and thread_id not in self.project_overrides:
                 project_id = None
-            if project_id not in groups and thread_id not in projectless_ids:
+            if project_id not in groups and thread_id not in projectless_ids \
+                    and thread_id not in self.project_overrides:
                 cwd = thread.get("cwd")
-                project_id = next((id for id, paths in roots.items() if cwd in paths), None)
+                project_id = next((id for id, paths in sorted(roots.items(), key=lambda pair: len(pair[1]))
+                                   if cwd in paths), None)
             (groups[project_id] if project_id in groups else standalone)["threads"].append(thread)
         return {"projects": [*groups.values(), standalone],
                 "selectedThreadId": self.selected_thread_id}
+
+    def assign_thread_project(self, thread_id: str, project_id: str) -> dict:
+        if not isinstance(thread_id, str) or not VALID_THREAD_ID.fullmatch(thread_id):
+            raise ValueError("Некорректный ID чата")
+        if not isinstance(project_id, str):
+            raise ValueError("Некорректный ID проекта")
+        catalog = self.projects()["projects"]
+        if project_id and not any(item["id"] == project_id for item in catalog if item["id"] != "other"):
+            raise ValueError("Проект не найден")
+        if thread_id not in self.draft_threads and not any(
+                thread["id"] == thread_id for group in catalog for thread in group["threads"]):
+            raise ValueError("Чат не найден")
+        if thread_id in self.draft_threads:
+            if project_id:
+                target = next(item for item in catalog if item["id"] == project_id)
+                self.draft_threads[thread_id] = target["cwd"]
+            else:
+                self.draft_threads[thread_id] = str(Path.home())
+        else:
+            with self.rpc_session() as rpc:
+                rpc.call("thread/metadata/update", {"threadId": thread_id, "projectId": project_id})
+        with self.state_lock:
+            self.project_overrides[thread_id] = project_id
+            self._save_state()
+        return {"threadId": thread_id, "projectId": project_id}
 
     def models(self) -> dict:
         with self.rpc_session() as rpc:
@@ -414,6 +465,7 @@ class Bridge:
                     rpc.call("thread/delete", {"threadId": thread_id})
             remaining = self.list_threads(limit=500)
             with self.state_lock:
+                self.project_overrides.pop(thread_id, None)
                 if self.selected_thread_id == thread_id:
                     if not remaining:
                         draft_id = "draft-" + uuid.uuid4().hex
@@ -594,6 +646,7 @@ class Bridge:
                 "thread_id": self.thread_id,
                 "selected_thread_id": self.selected_thread_id,
                 "draft_threads": self.draft_threads,
+                "project_overrides": self.project_overrides,
                 "token": self.token,
                 "paired": self.paired,
                 "pending": self.pending,
@@ -878,6 +931,9 @@ class Bridge:
                     start_params = {"serviceName": "codex_phone_companion"}
                     if cwd:
                         start_params["cwd"] = cwd
+                    draft_project = self.project_overrides.get(draft_id)
+                    if draft_project:
+                        start_params["projectId"] = draft_project
                     created = rpc.call("thread/start", start_params)
                     thread_id = created.get("thread", {}).get("id")
                     if not thread_id:
@@ -930,6 +986,8 @@ class Bridge:
             with self.state_lock:
                 if draft_id:
                     self.draft_threads.pop(draft_id, None)
+                    if draft_id in self.project_overrides:
+                        self.project_overrides[thread_id] = self.project_overrides.pop(draft_id)
                     if self.selected_thread_id == draft_id:
                         self.selected_thread_id = thread_id
                 for file_id in file_ids:
@@ -1285,6 +1343,16 @@ def main(argv: list[str] | None = None) -> None:
                 try:
                     data = self.read_json(4096)
                     self.send_json(200, bridge.delete_thread(data.get("threadId")))
+                except ValueError as exc:
+                    self.send_json(400, {"error": str(exc)})
+                except (RpcError, RuntimeError) as exc:
+                    self.send_json(409, {"error": str(exc)})
+                return
+            if route == "/api/threads/project":
+                try:
+                    data = self.read_json(4096)
+                    self.send_json(200, bridge.assign_thread_project(
+                        data.get("threadId"), data.get("projectId")))
                 except ValueError as exc:
                     self.send_json(400, {"error": str(exc)})
                 except (RpcError, RuntimeError) as exc:

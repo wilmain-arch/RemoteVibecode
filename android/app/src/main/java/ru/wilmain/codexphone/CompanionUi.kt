@@ -15,6 +15,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -54,6 +58,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateMapOf
@@ -65,6 +70,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
@@ -188,6 +194,7 @@ internal fun CompanionUi(
     onScan: () -> Unit,
     onSelectThread: (String) -> Unit,
     onDeleteThread: (String) -> Unit,
+    onMoveThread: (String, String) -> Unit,
     onNewChat: (String?) -> Unit,
     onRefreshCatalog: () -> Unit,
     onRefreshLimits: () -> Unit,
@@ -213,6 +220,8 @@ internal fun CompanionUi(
     loadImage: suspend (String) -> ByteArray,
 ) {
     val clipboard = LocalClipboardManager.current
+    val density = LocalDensity.current
+    val imeHeight = WindowInsets.ime.getBottom(density)
     val listState = remember(selectedThreadId) { LazyListState() }
     var firstHistoryScroll by remember(selectedThreadId) { mutableStateOf(true) }
     var modelSheet by remember { mutableStateOf(false) }
@@ -245,6 +254,14 @@ internal fun CompanionUi(
                 listState.animateScrollToItem(total - 1)
                 firstHistoryScroll = false
             }
+        }
+    }
+    val viewportHeight = listState.layoutInfo.viewportEndOffset - listState.layoutInfo.viewportStartOffset
+    LaunchedEffect(selectedThreadId, imeHeight, viewportHeight) {
+        if (imeHeight > 0 && listState.layoutInfo.totalItemsCount > 0) {
+            withFrameNanos { }
+            listState.scrollToItem(listState.layoutInfo.totalItemsCount - 1)
+            listState.scroll { scrollBy(100_000f) }
         }
     }
     val modelName = models.firstOrNull { it.id == selectedModel }?.name ?: selectedModel.ifBlank { "Модель чата" }
@@ -281,6 +298,9 @@ internal fun CompanionUi(
             onThemeMode = onThemeMode, onClose = { projectsOpen = false },
             onSelectThread = { projectsOpen = false; onSelectThread(it) },
             onDeleteThread = onDeleteThread,
+            onMoveThread = onMoveThread,
+            actionError = if (status.startsWith("Не удалось переместить") ||
+                status.startsWith("Не удалось удалить")) status else "",
             onNewChat = { projectsOpen = false; onNewChat(it) },
             onRefreshCatalog = onRefreshCatalog,
             onRefreshLimits = onRefreshLimits,
@@ -442,14 +462,12 @@ internal fun CompanionUi(
                         style = MaterialTheme.typography.bodySmall)
                 }
             } else {
+                Box(Modifier.fillMaxSize().padding(inner).consumeWindowInsets(inner)) {
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(
-                        start = 18.dp, end = 18.dp,
-                        top = inner.calculateTopPadding() + 12.dp,
-                        bottom = inner.calculateBottomPadding() + 12.dp,
-                    ),
+                    contentPadding = PaddingValues(start = 18.dp, end = 18.dp,
+                        top = 12.dp, bottom = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
                     if (historyHasMore || historyLoading || historyError.isNotBlank()) item(key = "older-history") {
@@ -632,8 +650,28 @@ internal fun CompanionUi(
                         }
                     }
                 }
+                if (listState.canScrollForward) {
+                    Surface(
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 16.dp)
+                            .size(48.dp).semantics { contentDescription = "К последнему сообщению" }
+                            .clickable {
+                                scope.launch {
+                                    val last = listState.layoutInfo.totalItemsCount - 1
+                                    if (last >= 0) listState.animateScrollToItem(last)
+                                }
+                            },
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shadowElevation = 5.dp,
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            UiGlyph(UiIcon.ChevronDown, size = 22.dp)
+                        }
+                    }
+                }
             }
         }
+    }
     openedImage?.let { image ->
         Dialog(onDismissRequest = { openedImage = null },
             properties = DialogProperties(usePlatformDefaultWidth = false)) {

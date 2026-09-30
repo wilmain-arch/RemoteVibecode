@@ -750,6 +750,22 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
         loadCatalog()
     }
 
+    suspend fun moveThread(threadId: String, projectId: String) {
+        withReachableHost { root ->
+            val body = JSONObject().put("threadId", threadId).put("projectId", projectId)
+                .toString().toRequestBody("application/json".toMediaType())
+            val request = Request.Builder().url("$root/api/threads/project")
+                .header("Authorization", "Bearer $token").post(body).build()
+            withContext(Dispatchers.IO) {
+                client.newCall(request).execute().use { response ->
+                    val json = JSONObject(response.body?.string().orEmpty())
+                    if (!response.isSuccessful) error(json.optString("error", "Не удалось переместить чат"))
+                }
+            }
+        }
+        loadCatalog()
+    }
+
     suspend fun acceptPair(uri: Uri) {
         status = "Подключаюсь…"
         val result = pairFromCode(uri)
@@ -996,6 +1012,12 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
                 scope.launch {
                     runCatching { deleteThread(id) }
                         .onFailure { status = "Не удалось удалить чат: ${it.message}" }
+                }
+            },
+            onMoveThread = { id, projectId ->
+                scope.launch {
+                    runCatching { moveThread(id, projectId) }
+                        .onFailure { status = "Не удалось переместить чат: ${it.message}" }
                 }
             },
             onNewChat = { cwd ->
