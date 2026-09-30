@@ -7,7 +7,7 @@
 | Устройство | Файл |
 | --- | --- |
 | Android | [RemoteVibecode Relay.apk](https://github.com/wilmain-arch/RemoteVibecode/releases/download/bundle-v0.2.0/RemoteVibecode-0.9.7-relay-debug.apk) |
-| ПК с Windows | [RemoteVibecodeAgent.exe](https://github.com/wilmain-arch/RemoteVibecode/releases/download/bundle-v0.2.0/RemoteVibecodeAgent.exe) |
+| ПК с Windows | [RemoteVibecodeAgent.exe](https://github.com/wilmain-arch/RemoteVibecode/releases/download/agent-v0.1.2/RemoteVibecodeAgent.exe) |
 | ПК с Arch Linux | [remotevibecode-agent.pkg.tar.zst](https://github.com/wilmain-arch/RemoteVibecode/raw/main/releases/remotevibecode-agent-0.1.2-1-any.pkg.tar.zst) |
 | Сервер Debian 13 / Ubuntu 26.04 | [remotevibecode-relay.deb](https://github.com/wilmain-arch/RemoteVibecode/releases/download/bundle-v0.2.0/remotevibecode-relay_0.1.0_all.deb) |
 
