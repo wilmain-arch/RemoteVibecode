@@ -1,6 +1,6 @@
 # Maintainer: wilmain <https://github.com/wilmain-arch>
 pkgname=remotevibecode-agent
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc='Графический агент RemoteVibecode для подключения ПК к своему ретранслятору'
 arch=('any')
@@ -8,21 +8,21 @@ url='https://github.com/wilmain-arch/RemoteVibecode'
 license=('unknown')
 depends=('python' 'python-cryptography' 'python-pillow' 'python-qrcode' 'tk' 'fontconfig')
 makedepends=('git')
-source=("$pkgname::git+https://github.com/wilmain-arch/RemoteVibecode.git#tag=arch-v$pkgver")
+source=("remotevibecode-source::git+https://github.com/wilmain-arch/RemoteVibecode.git#tag=arch-v$pkgver")
 sha256sums=('SKIP')
 
 package() {
     local appdir="$pkgdir/usr/lib/remotevibecode-agent"
-    install -Dm644 "$srcdir/$pkgname/agent/windows_agent.py" "$appdir/agent/windows_agent.py"
-    install -Dm644 "$srcdir/$pkgname/agent/gui.py" "$appdir/agent/gui.py"
-    install -Dm644 "$srcdir/$pkgname/agent/dashboard.py" "$appdir/agent/dashboard.py"
-    install -Dm644 "$srcdir/$pkgname/agent/remotevibecode.ico" "$appdir/agent/remotevibecode.ico"
-    install -Dm644 "$srcdir/$pkgname/bridge/__init__.py" "$appdir/bridge/__init__.py"
-    install -Dm644 "$srcdir/$pkgname/bridge/server.py" "$appdir/bridge/server.py"
-    install -Dm644 "$srcdir/$pkgname/bridge/adb_devices.py" "$appdir/bridge/adb_devices.py"
-    install -Dm755 "$srcdir/$pkgname/arch/remotevibecode-agent" "$pkgdir/usr/bin/remotevibecode-agent"
-    install -Dm644 "$srcdir/$pkgname/arch/remotevibecode-agent.desktop" \
+    install -Dm644 "$srcdir/remotevibecode-source/agent/windows_agent.py" "$appdir/agent/windows_agent.py"
+    install -Dm644 "$srcdir/remotevibecode-source/agent/gui.py" "$appdir/agent/gui.py"
+    install -Dm644 "$srcdir/remotevibecode-source/agent/dashboard.py" "$appdir/agent/dashboard.py"
+    install -Dm644 "$srcdir/remotevibecode-source/agent/remotevibecode.ico" "$appdir/agent/remotevibecode.ico"
+    install -Dm644 "$srcdir/remotevibecode-source/bridge/__init__.py" "$appdir/bridge/__init__.py"
+    install -Dm644 "$srcdir/remotevibecode-source/bridge/server.py" "$appdir/bridge/server.py"
+    install -Dm644 "$srcdir/remotevibecode-source/bridge/adb_devices.py" "$appdir/bridge/adb_devices.py"
+    install -Dm755 "$srcdir/remotevibecode-source/arch/remotevibecode-agent" "$pkgdir/usr/bin/remotevibecode-agent"
+    install -Dm644 "$srcdir/remotevibecode-source/arch/remotevibecode-agent.desktop" \
         "$pkgdir/usr/share/applications/remotevibecode-agent.desktop"
-    install -Dm644 "$srcdir/$pkgname/arch/remotevibecode-agent.png" \
+    install -Dm644 "$srcdir/remotevibecode-source/arch/remotevibecode-agent.png" \
         "$pkgdir/usr/share/icons/hicolor/256x256/apps/remotevibecode-agent.png"
 }

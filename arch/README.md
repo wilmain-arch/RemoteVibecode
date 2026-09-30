@@ -4,10 +4,10 @@
 
 ## Установка
 
-Скачайте `remotevibecode-agent-0.1.0-1-any.pkg.tar.zst` из [репозитория](https://github.com/wilmain-arch/RemoteVibecode/tree/main/releases), затем выполните:
+Скачайте `remotevibecode-agent-0.1.1-1-any.pkg.tar.zst` из [репозитория](https://github.com/wilmain-arch/RemoteVibecode/tree/main/releases), затем выполните:
 
 ```sh
-sudo pacman -U ./remotevibecode-agent-0.1.0-1-any.pkg.tar.zst
+sudo pacman -U ./remotevibecode-agent-0.1.1-1-any.pkg.tar.zst
 remotevibecode-agent
 ```
 
