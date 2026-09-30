@@ -1,0 +1,4 @@
+PyInstaller>=6.0,<7
+cryptography>=44,<50
+Pillow>=11,<13
+qrcode>=8,<9

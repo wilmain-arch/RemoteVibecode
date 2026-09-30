@@ -1,0 +1,1 @@
+"""RemoteVibecode local Codex bridge."""

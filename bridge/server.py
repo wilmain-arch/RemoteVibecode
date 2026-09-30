@@ -23,10 +23,14 @@ import threading
 import time
 import uuid
 import os
+import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, quote
-from adb_devices import AdbDevices
+try:
+    from .adb_devices import AdbDevices
+except ImportError:
+    from adb_devices import AdbDevices
 
 try:
     from PIL import Image, ImageOps
@@ -52,8 +56,9 @@ class CodexRpc:
             executable = str(desktop_codex) if desktop_codex.is_file() else shutil.which("codex")
         if not executable:
             raise RuntimeError("Не найден Codex CLI/app-server")
+        app_server_args = ["app-server", "--listen", "stdio://"] if sys.platform == "win32" else ["app-server", "--stdio"]
         self.proc = subprocess.Popen(
-            [executable, "app-server", "--stdio"],
+            [executable, *app_server_args],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -164,6 +169,8 @@ class Bridge:
         self.paired = bool(saved.get("paired", False))
         self.selected_thread_id = saved.get("selected_thread_id") or thread_id
         self.draft_threads: dict[str, str | None] = saved.get("draft_threads", {})
+        if thread_id.startswith("draft-") and thread_id not in self.draft_threads:
+            self.draft_threads[thread_id] = str(Path.home())
         self.rpc: CodexRpc | None = None
         self.rpc_lock = threading.RLock()
         self.rpc_last_used = 0.0
@@ -958,7 +965,7 @@ class BusyError(RuntimeError):
     pass
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--thread", required=True, help="ID существующей задачи Codex")
     parser.add_argument("--bind", default="0.0.0.0", help="Адрес интерфейса; по умолчанию доступен в локальной сети")
@@ -969,7 +976,7 @@ def main() -> None:
     parser.add_argument("--inbox", type=Path, default=Path(__file__).resolve().parents[1] / "inbox")
     parser.add_argument("--outbox", type=Path, default=Path(__file__).resolve().parents[1] / "outbox")
     parser.add_argument("--state", type=Path, default=Path.home() / ".config/codex-phone-companion/state.json")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     bridge_pin = args.pin or f"{secrets.randbelow(100_000_000):08d}"
     if not re.fullmatch(r"\d{8}", bridge_pin):
