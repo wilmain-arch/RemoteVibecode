@@ -6,10 +6,10 @@
 
 | Устройство | Файл |
 | --- | --- |
-| Android | [RemoteVibecode Relay.apk](https://github.com/wilmain-arch/RemoteVibecode/releases/download/bundle-v0.2.0/RemoteVibecode-0.9.7-relay-debug.apk) |
-| ПК с Windows | [RemoteVibecodeAgent.exe](https://github.com/wilmain-arch/RemoteVibecode/releases/download/agent-v0.1.6/RemoteVibecodeAgent.exe) |
-| ПК с Arch Linux | [remotevibecode-agent.pkg.tar.zst](https://github.com/wilmain-arch/RemoteVibecode/raw/main/releases/remotevibecode-agent-0.1.6-1-any.pkg.tar.zst) |
-| Сервер Debian 13 / Ubuntu 26.04 | [remotevibecode-relay.deb](https://github.com/wilmain-arch/RemoteVibecode/releases/download/bundle-v0.2.0/remotevibecode-relay_0.1.0_all.deb) |
+| Android | [RemoteVibecode.apk](https://github.com/wilmain-arch/RemoteVibecode/releases/download/bundle-v0.3.0/RemoteVibecode-0.9.8.apk) |
+| ПК с Windows | [RemoteVibecodeAgent.exe](https://github.com/wilmain-arch/RemoteVibecode/releases/download/bundle-v0.3.0/RemoteVibecodeAgent.exe) |
+| ПК с Arch Linux | [remotevibecode-agent.pkg.tar.zst](https://github.com/wilmain-arch/RemoteVibecode/releases/download/bundle-v0.3.0/remotevibecode-agent-0.1.6-1-any.pkg.tar.zst) |
+| Сервер Debian 13 / Ubuntu 26.04 | [remotevibecode-relay.deb](https://github.com/wilmain-arch/RemoteVibecode/releases/download/bundle-v0.3.0/remotevibecode-relay_0.1.0_all.deb) |
 
 ## Подключить
 
@@ -19,6 +19,6 @@
 
 На Arch Linux агент устанавливается через `sudo pacman -U ./remotevibecode-agent-0.1.6-1-any.pkg.tar.zst`. [Инструкция для Arch Linux](arch/README.md).
 
-После привязки приложение открывает чаты без повторного ввода кода. Телефон подключается через ваш сервер; на домашнем роутере ПК проброс портов не нужен. [Подробнее о подключении Android](android/RELAY_APK.md).
+После привязки приложение открывает чаты без повторного ввода кода. Телефон подключается через ваш сервер; на домашнем роутере ПК проброс портов не нужен. [Подробнее о подключении Android](android/README.md).
 
 **Статус:** предварительная версия. APK подписан отладочным ключом; полный маршрут через реальный сервер и Windows-ПК ещё не проверен.

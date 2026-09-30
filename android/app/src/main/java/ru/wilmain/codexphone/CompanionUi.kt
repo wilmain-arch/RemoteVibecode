@@ -423,7 +423,7 @@ internal fun CompanionUi(
             if (!paired) {
                 Column(Modifier.fillMaxSize().padding(inner).padding(24.dp),
                     verticalArrangement = Arrangement.Center) {
-                    Text(if (relayOnly) "RemoteVibecode Relay" else "RemoteVibecode", style = MaterialTheme.typography.headlineMedium,
+                    Text(if (relayOnly) "RemoteVibecode" else "RemoteVibecode Classic", style = MaterialTheme.typography.headlineMedium,
                         fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(12.dp))
                     Text(if (relayOnly)

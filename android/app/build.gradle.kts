@@ -12,8 +12,8 @@ android {
         applicationId = "ru.wilmain.codexphone"
         minSdk = 26
         targetSdk = 35
-        versionCode = 22
-        versionName = "0.9.7"
+        versionCode = 23
+        versionName = "0.9.8"
     }
 
     flavorDimensions += "connection"
@@ -25,7 +25,6 @@ android {
         create("relay") {
             dimension = "connection"
             applicationIdSuffix = ".relay"
-            versionNameSuffix = "-relay"
             buildConfigField("Boolean", "RELAY_ONLY", "true")
         }
     }
