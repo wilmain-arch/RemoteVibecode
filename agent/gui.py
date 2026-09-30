@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import queue
 import ssl
+import sys
 import threading
 import tkinter as tk
 from urllib import request
@@ -371,5 +372,10 @@ class AgentWindow:
 
 
 def launch(config_path: Path):
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    log_file = (config_path.parent / "agent.log").open("a", encoding="utf-8", buffering=1)
+    sys.stdout = log_file
+    sys.stderr = log_file
     app = AgentWindow(config_path)
     app.root.mainloop()
+    log_file.close()
