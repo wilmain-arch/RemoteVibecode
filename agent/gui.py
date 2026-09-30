@@ -48,6 +48,7 @@ class AgentWindow:
         self.error = ""
         self.pairing_path = ""
         self.qr_image = None
+        self.brand_image = None
         self.page = "Обзор"
         self.form: dict[str, tk.Entry] = {}
         self.message = ""
@@ -146,7 +147,14 @@ class AgentWindow:
         sidebar.pack_propagate(False)
         brand = tk.Frame(sidebar, bg=SIDE)
         brand.pack(fill="x", pady=(10, 58))
-        self.text(brand, "›_))", 24, CYAN, "bold").pack(side="left")
+        try:
+            icon_path = Path(__file__).with_name("remotevibecode.ico")
+            with Image.open(icon_path) as source:
+                self.brand_image = ImageTk.PhotoImage(source.convert("RGBA").resize((44, 44)))
+            tk.Label(brand, image=self.brand_image, bg=SIDE).pack(side="left")
+            self.root.iconphoto(True, self.brand_image)
+        except OSError:
+            self.text(brand, "›_))", 24, CYAN, "bold").pack(side="left")
         self.text(brand, "RemoteVibecode", 13, WHITE, "bold").pack(side="left", padx=(9, 0))
         for icon, label in [("⌂", "Обзор"), ("▯", "Устройства"),
                             ("⌁", "Подключение"), ("⚙", "Настройки")]:
@@ -192,8 +200,9 @@ class AgentWindow:
         self.heading(parent, title, subtitle)
         if self.error:
             self.text(parent, self.error[:125], 11, "#ffafae", wraplength=840).pack(anchor="w", pady=(0, 12))
-        row = tk.Frame(parent, bg=BG)
-        row.pack(fill="both", expand=True)
+        row = tk.Frame(parent, bg=BG, height=390)
+        row.pack(fill="x")
+        row.pack_propagate(False)
         left_outer, left = self.card(row)
         left_outer.pack(side="left", fill="both", expand=True, padx=(0, 12))
         right_outer, right = self.card(row)
@@ -233,13 +242,26 @@ class AgentWindow:
         self.text(right, "Соединение защищено TLS и привязкой к сертификату", 11, MUTED,
                   wraplength=360).pack(anchor="w", pady=(22, 0))
         lower_outer, lower = self.card(parent, 24, 18)
-        lower_outer.pack(fill="x", pady=(14, 0))
+        lower_outer.pack(fill="both", expand=True, pady=(14, 0))
         top = tk.Frame(lower, bg=CARD)
         top.pack(fill="x")
         self.text(top, "Привязанные устройства", 17, WHITE, "bold").pack(side="left")
         self.button(top, "Устройства  →", lambda: self.switch("Устройства")).pack(side="right")
         self.text(lower, "●  Телефон привязан" if paired else "Пока нет привязанных телефонов",
-                  12, GREEN if paired else MUTED).pack(anchor="w", pady=(16, 0))
+                  12, GREEN if paired else MUTED).pack(anchor="w", pady=(12, 0))
+        address_row = tk.Frame(lower, bg=CARD)
+        address_row.pack(fill="x", pady=(20, 0))
+        address_labels = tk.Frame(address_row, bg=CARD)
+        address_labels.pack(side="left", fill="x", expand=True)
+        self.text(address_labels, "Адрес подключения", 12, WHITE, "bold").pack(anchor="w")
+        public_address = f"https://{self.config['relayHost']}:{self.config['publicPort']}"
+        self.text(address_labels, public_address, 12, MUTED).pack(anchor="w", pady=(4, 0))
+        self.button(address_row, "Копировать", lambda: self.copy_address(public_address)).pack(side="right")
+
+    def copy_address(self, address):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(address)
+        self.message = "Адрес скопирован"
 
     def devices(self, parent):
         self.heading(parent, "Устройства", "Управляйте привязкой телефона")
