@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Windows PC bridge and outbound relay client for RemoteVibecode."""
+"""PC bridge and outbound relay client for RemoteVibecode."""
 
 from __future__ import annotations
 
@@ -31,7 +31,8 @@ from bridge import server as bridge_server
 
 
 APP_NAME = "RemoteVibecode"
-CONFIG_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home() / ".config")) / APP_NAME
+CONFIG_DIR = Path(os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_CONFIG_HOME")
+                  or Path.home() / ".config") / APP_NAME
 CONFIG_FILE = CONFIG_DIR / "agent.json"
 HEX_64 = re.compile(r"[0-9a-fA-F]{64}")
 
@@ -71,8 +72,13 @@ def setup(path: Path) -> None:
             "dataPort": 8767, "bridgePort": 18765,
             "codexExecutable": shutil.which("codex") or ""}
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Validate before writing. The user profile's AppData ACL protects this file.
-    path.write_text(json.dumps(load_config_from_dict(data), indent=2), encoding="utf-8")
+    # The file contains the relay secret; protect it on Linux as well as Windows.
+    validated = load_config_from_dict(data)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        json.dump(validated, stream, indent=2)
+    if sys.platform != "win32":
+        path.chmod(0o600)
     print(f"Настройки сохранены: {path}")
 
 
@@ -99,9 +105,14 @@ def ensure_certificate(directory: Path) -> tuple[Path, Path, str]:
                 .not_valid_after(now + timedelta(days=825))
                 .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
                 .sign(key, hashes.SHA256()))
-        key_path.write_bytes(key.private_bytes(serialization.Encoding.PEM,
-            serialization.PrivateFormat.TraditionalOpenSSL, serialization.NoEncryption()))
+        key_bytes = key.private_bytes(serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL, serialization.NoEncryption())
+        fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(key_bytes)
         cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    if sys.platform != "win32":
+        key_path.chmod(0o600)
     cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
     fingerprint = cert.fingerprint(hashes.SHA256()).hex().upper()
     return cert_path, key_path, fingerprint
@@ -286,7 +297,9 @@ def run_agent(config_path: Path, status=None, open_pairing=True, stop=None) -> N
     directory.mkdir(parents=True, exist_ok=True)
     cert, key, bridge_fingerprint = ensure_certificate(directory)
     pin = f"{secrets.randbelow(100_000_000):08d}"
-    codex_executable = config.get("codexExecutable") or shutil.which("codex")
+    desktop_codex = Path("/usr/lib/chatgpt/resources/codex")
+    codex_executable = (config.get("codexExecutable") or shutil.which("codex")
+                        or (str(desktop_codex) if desktop_codex.is_file() else None))
     if not codex_executable:
         raise RuntimeError("Codex CLI не найден. Установите Codex на ПК и укажите путь в настройках")
     os.environ["CODEX_EXECUTABLE"] = codex_executable

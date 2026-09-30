@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=RemoteVibecode
+Comment=Агент подключения к вашему ретранслятору
+Exec=remotevibecode-agent
+Icon=remotevibecode-agent
+Terminal=false
+Categories=Network;Utility;

@@ -14,6 +14,7 @@ from urllib import request
 
 from PIL import Image, ImageTk
 
+from agent.dashboard import WIDTH as DASH_WIDTH, HEIGHT as DASH_HEIGHT, render_dashboard
 from agent.windows_agent import ensure_certificate, load_config, load_config_from_dict, pairing_image, run_agent
 
 
@@ -36,8 +37,8 @@ class AgentWindow:
         self.config_path = config_path
         self.root = tk.Tk()
         self.root.title("RemoteVibecode")
-        self.root.geometry("1280x790")
-        self.root.minsize(1040, 680)
+        self.root.geometry("1500x845")
+        self.root.minsize(1040, 620)
         self.root.configure(bg=BG)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self.events: queue.Queue[tuple] = queue.Queue()
@@ -61,6 +62,7 @@ class AgentWindow:
                 self.error = f"Ошибка настроек: {exc}"
                 self.configured = False
         self.last_paired = self.paired()
+        self.dashboard_image = None
         self.draw()
         self.root.after(250, self.poll)
         if self.configured:
@@ -111,6 +113,9 @@ class AgentWindow:
         if now_paired != self.last_paired:
             self.last_paired = now_paired
             self.draw()
+        elif self.pairing_path and not Path(self.pairing_path).is_file():
+            self.pairing_path = ""
+            self.draw()
         self.root.after(500, self.poll)
 
     def paired(self) -> bool:
@@ -139,6 +144,9 @@ class AgentWindow:
     def draw(self):
         for child in self.root.winfo_children():
             child.destroy()
+        if self.page == "Обзор":
+            self.draw_dashboard()
+            return
         shell = tk.Frame(self.root, bg=BG)
         shell.pack(fill="both", expand=True, padx=18, pady=18)
         sidebar = tk.Frame(shell, bg=SIDE, width=235, padx=16, pady=22,
@@ -167,7 +175,7 @@ class AgentWindow:
                             activebackground=CARD_2, activeforeground=WHITE,
                             relief="flat", bd=0, padx=15, pady=15)
             nav.pack(fill="x", pady=3)
-        self.text(sidebar, "АГЕНТ ДЛЯ WINDOWS", 9, QUIET).pack(side="bottom", anchor="w")
+        self.text(sidebar, "АГЕНТ REMOTEVIBECODE", 9, QUIET).pack(side="bottom", anchor="w")
         content = tk.Frame(shell, bg=BG)
         content.pack(side="left", fill="both", expand=True, padx=(27, 0))
         if self.page == "Обзор":
@@ -178,6 +186,56 @@ class AgentWindow:
             self.connection(content)
         else:
             self.settings(content)
+
+    def draw_dashboard(self):
+        canvas = tk.Canvas(self.root, bg=BG, bd=0, highlightthickness=0, cursor="arrow")
+        canvas.pack(fill="both", expand=True)
+        base = render_dashboard(
+            icon_path=Path(__file__).with_name("remotevibecode.ico"),
+            qr_path=Path(self.pairing_path) if self.pairing_path else None,
+            configured=self.configured, bridge_ready=self.bridge_ready,
+            relay_ready=self.relay_ready, paired=self.paired(),
+            address=(f"{self.config['relayHost']}:{self.config['publicPort']}"
+                     if self.configured else ""),
+            error=self.error, status=self.message,
+        )
+
+        def fit(event=None):
+            width = max(canvas.winfo_width(), 1)
+            height = max(canvas.winfo_height(), 1)
+            scale = min(width / DASH_WIDTH, height / DASH_HEIGHT)
+            target = (max(1, int(DASH_WIDTH * scale)), max(1, int(DASH_HEIGHT * scale)))
+            picture = base.resize(target, Image.Resampling.LANCZOS)
+            self.dashboard_image = ImageTk.PhotoImage(picture)
+            canvas.delete("all")
+            canvas.create_image((width - target[0]) // 2, (height - target[1]) // 2,
+                                image=self.dashboard_image, anchor="nw")
+            canvas._layout = ((width - target[0]) // 2, (height - target[1]) // 2, scale)
+
+        def click(event):
+            x0, y0, scale = getattr(canvas, "_layout", (0, 0, 1))
+            x, y = (event.x - x0) / scale, (event.y - y0) / scale
+            if 32 <= x <= 308 and 183 <= y <= 468:
+                index = int((y - 183) // 72)
+                pages = ("Обзор", "Устройства", "Подключение", "Настройки")
+                if 0 <= index < len(pages):
+                    self.switch(pages[index])
+            elif 650 <= x <= 1022 and 419 <= y <= 477:
+                if self.bridge_ready:
+                    self.refresh_pairing()
+                elif not self.configured:
+                    self.switch("Настройки")
+            elif 1384 <= x <= 1619 and 564 <= y <= 607:
+                self.switch("Устройства")
+            elif 1387 <= x <= 1593 and 650 <= y <= 709:
+                self.switch("Устройства")
+            elif 1427 <= x <= 1597 and 827 <= y <= 879 and self.configured:
+                address = f"https://{self.config['relayHost']}:{self.config['publicPort']}"
+                self.copy_address(address)
+                self.draw()
+
+        canvas.bind("<Configure>", fit)
+        canvas.bind("<Button-1>", click)
 
     def switch(self, page):
         self.page = page
@@ -378,6 +436,8 @@ class AgentWindow:
             self.config_path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.config_path.with_suffix(".tmp")
             temporary.write_text(json.dumps(validated, indent=2), encoding="utf-8")
+            if sys.platform != "win32":
+                temporary.chmod(0o600)
             os.replace(temporary, self.config_path)
             self.config = validated
             self.configured = True
