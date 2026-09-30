@@ -1,0 +1,14 @@
+android/.gradle/
+android/local.properties
+android/**/build/
+inbox/*
+!inbox/.gitkeep
+outbox/*
+__pycache__/
+dist/
+*.key
+*.jks
+*.keystore
+.env
+*.env.local
+codex-phone-companion.service

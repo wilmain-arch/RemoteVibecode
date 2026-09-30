@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codex Phone · цельный гибридный интерфейс</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #e8e9e7; color: #202321; font-family: Inter, Roboto, "Noto Sans", Arial, sans-serif; }
+    button { font: inherit; cursor: pointer; }
+    .studio { min-height: 100vh; display: grid; place-items: center; padding: 24px; gap: 18px; }
+    .controls { width: min(100%, 440px); display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
+    .controls strong { font-size: 14px; }
+    .controls select { border: 1px solid #c9ccca; border-radius: 9px; padding: 9px 10px; background: #fff; color: #252826; }
+    .phone { --bg: #fafaf9; --surface: #fff; --surface-2: #f1f2ef; --text: #202321; --muted: #727774; --line: #e4e7e3; --accent: #247661; --accent-soft: #e7f2ed; --bubble: #ecefeb; width: 390px; height: 844px; overflow: hidden; position: relative; background: var(--bg); color: var(--text); border: 7px solid #242726; border-radius: 41px; box-shadow: 0 20px 55px #17221b38, 0 0 0 1px #ffffff70 inset; }
+    .phone.dark { --bg: #111413; --surface: #191d1b; --surface-2: #252a27; --text: #f2f4f1; --muted: #a0a8a2; --line: #303632; --accent: #8ccdb4; --accent-soft: #20382e; --bubble: #292e2b; }
+    .status { height: 30px; padding: 8px 24px 0; display: flex; justify-content: space-between; font-size: 12px; font-weight: 650; letter-spacing: .01em; }
+    .status-right { letter-spacing: .12em; }
+    .viewport { position: absolute; top: 30px; bottom: 17px; left: 0; right: 0; display: none; flex-direction: column; }
+    .viewport.active { display: flex; }
+    .bar { min-height: 57px; display: flex; align-items: center; gap: 8px; padding: 0 13px; }
+    .icon-button { width: 42px; height: 42px; display: grid; place-items: center; border: 0; background: transparent; border-radius: 13px; color: var(--text); flex: none; }
+    .icon-button:hover, .icon-button:focus-visible { background: var(--surface-2); outline: none; }
+    .icon-button svg { width: 21px; height: 21px; stroke-width: 1.85; }
+    .bar-title { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 17px; font-weight: 670; letter-spacing: -.025em; }
+    .bar-subtitle { font-size: 11px; color: var(--muted); font-weight: 450; margin-top: 2px; letter-spacing: 0; }
+    .chip { display: inline-flex; align-items: center; gap: 7px; border-radius: 20px; padding: 6px 10px; font-size: 11px; font-weight: 620; white-space: nowrap; }
+    .chip.online { color: var(--accent); background: var(--accent-soft); }
+    .chip .dot { width: 6px; height: 6px; background: currentColor; border-radius: 50%; }
+    .context { min-height: 43px; display: flex; align-items: center; padding: 0 20px; border-bottom: 1px solid var(--line); gap: 10px; font-size: 12px; color: var(--muted); }
+    .context .rail { width: 3px; height: 20px; background: var(--accent); border-radius: 4px; }
+    .context strong { color: var(--text); font-weight: 600; }
+    .context .push { margin-left: auto; }
+    .chat-scroll { flex: 1; min-height: 0; overflow: auto; padding: 24px 20px 8px; }
+    .day { margin: 0 0 16px; color: var(--muted); font-size: 11px; text-align: center; }
+    .user-row { display: flex; justify-content: flex-end; margin-bottom: 11px; }
+    .user-msg { max-width: 87%; padding: 12px 15px; background: var(--bubble); border-radius: 17px 17px 5px 17px; font-size: 14px; line-height: 1.48; }
+    .msg-meta { display: flex; justify-content: flex-end; gap: 9px; margin-bottom: 18px; font-size: 10px; color: var(--muted); }
+    .assistant-head { display: flex; align-items: center; gap: 9px; font-size: 12px; margin-bottom: 12px; }
+    .assistant-mark { display: grid; place-items: center; width: 22px; height: 22px; background: var(--surface-2); border-radius: 7px; color: var(--accent); font-size: 15px; }
+    .assistant-head strong { font-weight: 680; }
+    .assistant-head time { color: var(--muted); margin-left: auto; font-size: 11px; }
+    .assistant-copy { font-size: 14px; line-height: 1.56; letter-spacing: -.008em; }
+    .assistant-copy p { margin: 0 0 11px; }
+    .work-card { background: var(--surface); border: 1px solid var(--line); border-radius: 15px; padding: 0 12px; margin: 17px 0 18px; }
+    .work-top { display: flex; align-items: center; gap: 10px; min-height: 44px; font-size: 12px; font-weight: 640; }
+    .work-top .count { margin-left: auto; color: var(--muted); font-weight: 450; }
+    .work-step { display: flex; gap: 10px; border-top: 1px solid var(--line); padding: 10px 1px; color: var(--muted); font-size: 11px; line-height: 1.4; }
+    .work-step span:first-child { color: var(--accent); }
+    .inline-file { margin: 13px 0 18px; display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); background: var(--surface); border-radius: 12px; padding: 10px 12px; font-size: 12px; }
+    .inline-file small { display: block; color: var(--muted); margin-top: 3px; }
+    .inline-file .arrow { margin-left: auto; color: var(--muted); }
+    .message-actions { display: flex; gap: 14px; margin-top: 12px; color: var(--muted); font-size: 11px; }
+    .composer-wrap { padding: 8px 14px 10px; background: var(--bg); border-top: 1px solid var(--line); }
+    .model-line { display: flex; align-items: center; justify-content: space-between; margin: 0 4px 8px; color: var(--muted); font-size: 11px; }
+    .model-line strong { color: var(--text); font-weight: 600; }
+    .composer { background: var(--surface); border: 1px solid var(--line); border-radius: 22px; min-height: 98px; padding: 13px 12px 9px; box-shadow: 0 2px 8px #00000008; }
+    .composer-placeholder { color: var(--muted); font-size: 14px; margin: 0 3px 20px; }
+    .composer-tools { display: flex; gap: 4px; align-items: center; }
+    .composer-tools .icon-button { width: 34px; height: 34px; }
+    .composer-tools .icon-button svg { width: 19px; height: 19px; }
+    .composer-tools .send { width: 35px; height: 35px; margin-left: auto; border: 0; border-radius: 50%; color: var(--bg); background: var(--text); display: grid; place-items: center; }
+    .gesture { position: absolute; bottom: 7px; left: calc(50% - 52px); width: 104px; height: 4px; background: var(--text); border-radius: 4px; opacity: .85; }
+    .file-context { padding: 5px 21px 15px; border-bottom: 1px solid var(--line); }
+    .eyebrow { display: block; color: var(--muted); font-size: 10px; font-weight: 650; letter-spacing: .09em; text-transform: uppercase; margin-bottom: 7px; }
+    .path-line { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+    .path-line strong { font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tabs { padding: 12px 16px 0; display: flex; gap: 5px; border-bottom: 1px solid var(--line); }
+    .tab { background: none; border: 0; color: var(--muted); padding: 10px 15px 13px; font-size: 13px; font-weight: 550; border-bottom: 2px solid transparent; }
+    .tab.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 680; }
+    .files-scroll { flex: 1; overflow: auto; min-height: 0; }
+    .search-box { margin: 16px 18px 10px; display: flex; align-items: center; gap: 10px; height: 43px; padding: 0 13px; border-radius: 12px; background: var(--surface-2); color: var(--muted); font-size: 12px; }
+    .search-box svg { width: 17px; height: 17px; }
+    .section-label { margin: 23px 21px 9px; font-size: 10px; font-weight: 680; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+    .file-row { min-height: 58px; margin: 0 14px; display: flex; align-items: center; gap: 11px; padding: 9px 7px; border-bottom: 1px solid var(--line); }
+    .file-symbol { width: 34px; height: 34px; display: grid; place-items: center; flex: none; border-radius: 9px; background: var(--surface-2); color: var(--muted); font-size: 15px; font-weight: 680; }
+    .file-symbol svg { width: 19px; height: 19px; stroke-width: 1.8; }
+    .file-symbol.folder { background: var(--accent-soft); color: var(--accent); }
+    .file-symbol.md { font-family: ui-monospace, monospace; font-size: 11px; }
+    .file-name { flex: 1; min-width: 0; font-size: 12px; line-height: 1.3; }
+    .file-name strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 590; }
+    .file-name small { display: block; color: var(--muted); margin-top: 4px; font-size: 10px; }
+    .file-chevron { color: var(--muted); font-size: 18px; padding: 0 3px; }
+    .bottom-note { margin: 16px 21px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .preview-meta { padding: 7px 20px 15px; border-bottom: 1px solid var(--line); }
+    .preview-meta h1 { font-size: 19px; line-height: 1.2; margin: 0 0 9px; letter-spacing: -.035em; }
+    .preview-meta .path { color: var(--muted); font-size: 10px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .preview-actions { display: flex; gap: 8px; padding: 12px 17px; border-bottom: 1px solid var(--line); }
+    .button-primary, .button-secondary { border-radius: 11px; padding: 9px 12px; font-size: 12px; font-weight: 620; }
+    .button-primary { color: var(--bg); background: var(--text); border: 1px solid var(--text); }
+    .button-secondary { color: var(--text); background: var(--surface); border: 1px solid var(--line); }
+    .preview-scroll { overflow: auto; flex: 1; min-height: 0; padding: 22px 20px 30px; }
+    .preview-scroll h2 { font-size: 20px; line-height: 1.25; margin: 0 0 16px; letter-spacing: -.04em; }
+    .preview-scroll h3 { font-size: 14px; margin: 23px 0 10px; }
+    .preview-scroll p, .preview-scroll li { font-size: 12px; line-height: 1.55; }
+    .preview-scroll p { margin: 0 0 12px; }
+    .preview-scroll ul { padding-left: 18px; }
+    .preview-scroll code { padding: 2px 4px; background: var(--surface-2); border-radius: 4px; font-size: 10px; }
+    .table-hint { display: flex; justify-content: space-between; margin: 17px 0 7px; color: var(--muted); font-size: 10px; }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; scrollbar-width: thin; }
+    table { border-collapse: collapse; width: 590px; text-align: left; font-size: 11px; }
+    th, td { min-width: 120px; padding: 10px 12px; vertical-align: top; border-bottom: 1px solid var(--line); }
+    th { background: var(--surface-2); font-weight: 650; }
+    tr:last-child td { border-bottom: 0; }
+    .transfer-card { margin: 17px 18px; padding: 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 17px; }
+    .transfer-card h2 { margin: 0 0 5px; font-size: 15px; letter-spacing: -.025em; }
+    .transfer-card p { margin: 0 0 14px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .transfer-card .button-primary { width: 100%; padding: 11px; }
+    .transfer-row { display: flex; gap: 11px; align-items: center; padding: 12px 0; border-top: 1px solid var(--line); }
+    .transfer-row:first-of-type { border-top: 0; }
+    .transfer-row .button-secondary { margin-left: auto; padding: 8px 11px; }
+    .transfer-note { margin: -7px 24px 0; color: var(--muted); font-size: 11px; }
+    /* Unified surfaces: spacing and typography carry the hierarchy. */
+    .phone { --bg: #f8f9f7; --surface: #f8f9f7; --surface-2: #ebeeea; --line: #e4e7e3; --bubble: #e9ece8; }
+    .phone.dark { --bg: #141715; --surface: #141715; --surface-2: #242925; --line: #303632; --bubble: #292e2b; }
+    .context, .file-context, .tabs, .preview-meta, .preview-actions, .composer-wrap { border: 0; }
+    .context { padding-bottom: 3px; }
+    .file-context { padding-top: 8px; padding-bottom: 18px; }
+    .tabs { gap: 6px; padding-top: 0; padding-bottom: 7px; }
+    .tab { border: 0; border-radius: 10px; padding: 9px 15px; }
+    .tab.active { border: 0; background: var(--surface-2); color: var(--text); }
+    .search-box { margin-top: 12px; margin-bottom: 5px; }
+    .section-label { margin-top: 25px; margin-bottom: 11px; }
+    .file-row { border: 0; min-height: 60px; padding-top: 10px; padding-bottom: 10px; }
+    .file-symbol { width: 31px; height: 31px; background: transparent; }
+    .file-symbol.folder { background: transparent; }
+    .file-symbol.md { color: var(--muted); }
+    .file-chevron { opacity: .68; }
+    .work-card { border: 0; background: var(--surface-2); padding: 3px 13px; }
+    .work-step { border: 0; padding: 7px 2px; }
+    .work-step:last-child { padding-bottom: 11px; }
+    .inline-file { border: 0; background: var(--surface-2); }
+    .composer { border: 0; background: var(--surface-2); box-shadow: none; }
+    .composer-wrap { padding-top: 11px; }
+    .preview-meta { padding-bottom: 12px; }
+    .preview-actions { padding-top: 7px; padding-bottom: 11px; }
+    .button-secondary { border: 0; background: var(--surface-2); }
+    .preview-scroll { padding-top: 16px; }
+    .table-wrap { border: 0; background: var(--surface-2); }
+    th, td { border: 0; padding-top: 12px; padding-bottom: 12px; }
+    th { background: transparent; }
+    tr:nth-child(even) { background: #00000006; }
+    .phone.dark tr:nth-child(even) { background: #ffffff06; }
+    .transfer-card { border: 0; background: var(--surface-2); }
+    .transfer-row { border: 0; padding-top: 14px; padding-bottom: 14px; }
+    .transfer-row .button-secondary { background: var(--bg); }
+    .assistant-mark { background: var(--surface-2); }
+    .message-actions { display: none; }
+    @media (max-width: 430px) { .studio { padding: 0; } .controls { padding: 15px; flex-wrap: wrap; } .phone { width: 100vw; height: min(844px, calc(100dvh - 68px)); border-radius: 0; border-width: 0; } }
+  </style>
+</head>
+<body>
+<svg style="display:none" xmlns="http://www.w3.org/2000/svg">
+  <symbol id="menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" stroke-linecap="round"/></symbol>
+  <symbol id="back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="file" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6zM14 3v5h5M9 12h6M9 16h6" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="plus" viewBox="0 0 24 24"><path d="M12 4v16M4 12h16" fill="none" stroke="currentColor" stroke-linecap="round"/></symbol>
+  <symbol id="search" viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.3" fill="none" stroke="currentColor"/><path d="m16 16 4.3 4.3" fill="none" stroke="currentColor" stroke-linecap="round"/></symbol>
+  <symbol id="arrow" viewBox="0 0 24 24"><path d="M12 19V5m0 0-6 6m6-6 6 6" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3z" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+</svg>
+<div class="studio">
+  <div class="controls"><strong>Codex Phone · макеты 0.8.1</strong><div><select id="screen-select" aria-label="Экран"><option value="chat">Чат</option><option value="projects">Проекты</option><option value="files">Файлы проекта</option><option value="preview">Просмотр файла</option><option value="transfer">Передача</option></select> <select id="theme-select" aria-label="Тема"><option value="dark">Тёмная</option><option value="light">Светлая</option></select></div></div>
+  <div class="phone dark" id="phone">
+    <div class="status"><span>9:41</span><span class="status-right">▴  ▰  ▰  90%</span></div>
+    <section class="viewport" data-screen="chat">
+      <div class="bar"><button class="icon-button" data-go="projects" aria-label="Проекты"><svg><use href="#menu"/></svg></button><div class="bar-title">Меню файлов<div class="bar-subtitle">Задача Codex</div></div><button class="icon-button" data-go="files" aria-label="Файлы"><svg><use href="#file"/></svg></button><button class="icon-button" aria-label="Новый чат"><svg><use href="#plus"/></svg></button></div>
+      <div class="context"><span class="rail"></span><strong>Рутина</strong><span>·</span><span>Codex Phone Companion</span><span class="push chip online"><span class="dot"></span>На связи</span></div>
+      <div class="chat-scroll">
+        <div class="day">Сегодня · 09:41</div>
+        <div class="user-row"><div class="user-msg">Проработай меню файлов. Хочу видеть проект и отправлять файлы с телефона.</div></div><div class="msg-meta"><span>09:42</span><span>Копировать</span></div>
+        <div class="assistant-head"><span class="assistant-mark">✦</span><strong>Codex</strong><time>09:42</time></div>
+        <div class="assistant-copy"><p>Собрал файлы выбранного проекта в отдельном разделе. Можно открыть папку, прочитать документ и подставить его путь в сообщение.</p></div>
+        <div class="work-card"><div class="work-top"><span style="color:var(--accent)">◌</span><span>Ход работы</span><span class="count">3 действия · свернуть⌄</span></div><div class="work-step"><span>✓</span><span>Изучил структуру проекта</span></div><div class="work-step"><span>✓</span><span>Проверил предпросмотр Markdown</span></div><div class="work-step"><span>✓</span><span>Сохранил файл на телефон</span></div></div>
+        <div class="inline-file"><span class="file-symbol md">MD</span><span><strong>FILE_WORKFLOW.md</strong><small>Документ проекта · 3,2 КБ</small></span><span class="arrow">›</span></div>
+        <div class="message-actions"><span>Скопировать</span><span>·</span><span>Повторить</span></div>
+      </div>
+      <div class="composer-wrap"><div class="model-line"><span><strong>GPT-6 Sol</strong> · среднее усилие ⌄</span><span>Для этого чата</span></div><div class="composer"><div class="composer-placeholder">Сообщение для Codex</div><div class="composer-tools"><button class="icon-button" aria-label="Прикрепить с телефона"><svg><use href="#plus"/></svg></button><button class="icon-button" data-go="files" aria-label="Открыть файлы проекта"><svg><use href="#file"/></svg></button><button class="send" aria-label="Отправить"><svg width="18" height="18"><use href="#arrow"/></svg></button></div></div></div>
+    </section>
+    <section class="viewport" data-screen="projects">
+      <div class="bar"><button class="icon-button" data-go="chat" aria-label="Назад"><svg><use href="#back"/></svg></button><div class="bar-title">Проекты и чаты</div><button class="icon-button" aria-label="Новый чат"><svg><use href="#plus"/></svg></button></div>
+      <div class="files-scroll"><div class="search-box"><svg><use href="#search"/></svg>Поиск чатов</div><div class="section-label">Открытый проект</div><div class="file-row"><span class="file-symbol folder"><svg><use href="#folder"/></svg></span><span class="file-name"><strong>Рутина</strong><small>4 чата · /Документы/ChatGPT</small></span><span class="file-chevron">⌄</span></div><div class="file-row" data-go="chat"><span class="file-symbol">✦</span><span class="file-name"><strong>Переработка приложения</strong><small>Последний ответ · сегодня</small></span><span class="file-chevron">›</span></div><div class="file-row"><span class="file-symbol">✦</span><span class="file-name"><strong>Проверка с телефона</strong><small>Вчера</small></span><span class="file-chevron">›</span></div><div class="section-label">Другие проекты</div><div class="file-row"><span class="file-symbol folder"><svg><use href="#folder"/></svg></span><span class="file-name"><strong>Minecraft</strong><small>2 чата</small></span><span class="file-chevron">›</span></div><div class="file-row"><span class="file-symbol folder"><svg><use href="#folder"/></svg></span><span class="file-name"><strong>Домашний сервер</strong><small>3 чата</small></span><span class="file-chevron">›</span></div></div>
+    </section>
+    <section class="viewport" data-screen="files">
+      <div class="bar"><button class="icon-button" data-go="chat" aria-label="Назад"><svg><use href="#back"/></svg></button><div class="bar-title">Файлы</div><span class="chip online"><span class="dot"></span>На связи</span></div>
+      <div class="file-context"><span class="eyebrow">Проект выбранного чата</span><div class="path-line"><span style="color:var(--accent)">▦</span><strong>Рутина / codex-phone-companion</strong><span style="color:var(--muted)">⌄</span></div></div>
+      <div class="tabs"><button class="tab active" data-go="files">Проект</button><button class="tab" data-go="transfer">Передача</button></div>
+      <div class="files-scroll"><div class="search-box"><svg><use href="#search"/></svg>Найти в этой папке</div><div class="section-label">Папки</div><div class="file-row"><span class="file-symbol folder"><svg><use href="#folder"/></svg></span><span class="file-name"><strong>android</strong><small>Исходники приложения</small></span><span class="file-chevron">›</span></div><div class="file-row"><span class="file-symbol folder"><svg><use href="#folder"/></svg></span><span class="file-name"><strong>bridge</strong><small>Сервер и передача файлов</small></span><span class="file-chevron">›</span></div><div class="file-row"><span class="file-symbol folder"><svg><use href="#folder"/></svg></span><span class="file-name"><strong>design</strong><small>Иконка и визуальные материалы</small></span><span class="file-chevron">›</span></div><div class="section-label">Документы</div><div class="file-row" data-go="preview"><span class="file-symbol md">MD</span><span class="file-name"><strong>UI_AUDIT.md</strong><small>Markdown · 8,7 КБ</small></span><span class="file-chevron">›</span></div><div class="file-row" data-go="preview"><span class="file-symbol md">MD</span><span class="file-name"><strong>FILE_WORKFLOW.md</strong><small>Markdown · 3,2 КБ</small></span><span class="file-chevron">›</span></div><div class="file-row"><span class="file-symbol md">MD</span><span class="file-name"><strong>ARCHITECTURE.md</strong><small>Markdown · 4,1 КБ</small></span><span class="file-chevron">›</span></div><div class="file-row"><span class="file-symbol">PY</span><span class="file-name"><strong>serve-apk.py</strong><small>Python · 2,4 КБ</small></span><span class="file-chevron">›</span></div><div class="bottom-note">Показаны файлы этой папки. Для содержимого вложенных папок откройте их.</div></div>
+    </section>
+    <section class="viewport" data-screen="preview">
+      <div class="bar"><button class="icon-button" data-go="files" aria-label="Назад к файлам"><svg><use href="#back"/></svg></button><div class="bar-title">Просмотр файла</div><button class="icon-button" aria-label="Другие действия">⋯</button></div>
+      <div class="preview-meta"><span class="eyebrow">Рутина · codex-phone-companion</span><h1>UI_AUDIT.md</h1><div class="path">codex-phone-companion / UI_AUDIT.md · 8,7 КБ</div></div>
+      <div class="preview-actions"><button class="button-primary">Спросить Codex</button><button class="button-secondary">Сохранить на телефон</button></div>
+      <div class="preview-scroll"><h2>Аудит интерфейса Android-клиента</h2><p>Осмотр выполнен на OnePlus 9 Pro в тёмной теме: проверены чат, список проектов, выбор модели и работа с файлами.</p><h3>Главные наблюдения</h3><ul><li>Кнопки файлов должны вести в одно понятное место.</li><li>Путь документа остаётся виден при чтении.</li><li>Длинные таблицы прокручиваются по горизонтали.</li></ul><div class="table-hint"><strong>Изменения</strong><span>Сдвиньте таблицу →</span></div><div class="table-wrap"><table><thead><tr><th>Приоритет</th><th>Наблюдение</th><th>Изменение</th></tr></thead><tbody><tr><td>Высокий</td><td>Файлы разбросаны между чатом и нижним меню</td><td>Один экран «Файлы» с двумя вкладками</td></tr><tr><td>Средний</td><td>В таблицах текст выходит за край экрана</td><td>Горизонтальная прокрутка в границах блока</td></tr><tr><td>Средний</td><td>Слишком большой композер</td><td>Компактная высота до ввода текста</td></tr></tbody></table></div><h3>Следующий шаг</h3><p>Перенести визуальные решения в Jetpack Compose и проверить на физическом телефоне.</p></div>
+    </section>
+    <section class="viewport" data-screen="transfer">
+      <div class="bar"><button class="icon-button" data-go="chat" aria-label="Назад"><svg><use href="#back"/></svg></button><div class="bar-title">Файлы</div><span class="chip online"><span class="dot"></span>На связи</span></div>
+      <div class="file-context"><span class="eyebrow">Проект выбранного чата</span><div class="path-line"><span style="color:var(--accent)">▦</span><strong>Рутина / codex-phone-companion</strong></div></div>
+      <div class="tabs"><button class="tab" data-go="files">Проект</button><button class="tab active" data-go="transfer">Передача</button></div>
+      <div class="files-scroll"><div class="transfer-card"><span class="eyebrow">С телефона в чат</span><h2>Добавить файл к сообщению</h2><p>Выбранный файл появится рядом с полем ввода и отправится вместе со следующим сообщением.</p><button class="button-primary">Выбрать файл на телефоне</button></div><div class="section-label">С ПК на телефон · outbox</div><div class="transfer-card" style="padding-top:6px;padding-bottom:6px"><div class="transfer-row"><span class="file-symbol md">TXT</span><span class="file-name"><strong>телефон-на-пк.txt</strong><small>Текст · 66 Б</small></span><button class="button-secondary">Сохранить</button></div><div class="transfer-row"><span class="file-symbol md">PDF</span><span class="file-name"><strong>отчёт.pdf</strong><small>PDF · 1,4 МБ</small></span><button class="button-secondary">Сохранить</button></div></div><div class="transfer-note">Сохранение откроет системный выбор папки Android.</div></div>
+    </section>
+    <div class="gesture"></div>
+  </div>
+</div>
+<script>
+  const params = new URLSearchParams(location.search);
+  const screens = new Set(['chat', 'projects', 'files', 'preview', 'transfer']);
+  const state = { screen: screens.has(params.get('screen')) ? params.get('screen') : 'chat', theme: params.get('theme') === 'light' ? 'light' : 'dark' };
+  const phone = document.getElementById('phone');
+  const screenSelect = document.getElementById('screen-select');
+  const themeSelect = document.getElementById('theme-select');
+  function render() {
+    phone.classList.toggle('dark', state.theme === 'dark');
+    document.querySelectorAll('.viewport').forEach(view => view.classList.toggle('active', view.dataset.screen === state.screen));
+    screenSelect.value = state.screen; themeSelect.value = state.theme;
+    history.replaceState(null, '', `?screen=${state.screen}&theme=${state.theme}`);
+  }
+  screenSelect.onchange = event => { state.screen = event.target.value; render(); };
+  themeSelect.onchange = event => { state.theme = event.target.value; render(); };
+  document.querySelectorAll('[data-go]').forEach(node => node.addEventListener('click', () => { state.screen = node.dataset.go; render(); }));
+  render();
+</script>
+</body>
+</html>

@@ -1,0 +1,24 @@
+#!/bin/sh
+set -eu
+
+if [ "${1:-}" = configure ]; then
+    install -d -m 0700 /etc/remotevibecode
+    if [ ! -s /etc/remotevibecode/relay-secret ]; then
+        umask 077
+        openssl rand -hex 32 > /etc/remotevibecode/relay-secret
+    fi
+    if [ ! -s /etc/remotevibecode/relay-cert ] || [ ! -s /etc/remotevibecode/relay-key ]; then
+        umask 077
+        openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 825 \
+            -keyout /etc/remotevibecode/relay-key \
+            -out /etc/remotevibecode/relay-cert \
+            -subj '/CN=RemoteVibecode relay' >/dev/null 2>&1
+    fi
+    chmod 0600 /etc/remotevibecode/relay-secret /etc/remotevibecode/relay-key
+    chmod 0644 /etc/remotevibecode/relay-cert
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload
+        systemctl enable remotevibecode-relay.service
+        systemctl restart remotevibecode-relay.service
+    fi
+fi

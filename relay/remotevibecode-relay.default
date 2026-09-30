@@ -1,0 +1,5 @@
+# Public port for the phone's end-to-end TLS connection to its own PC.
+RV_PUBLIC_PORT=8765
+# TLS-protected control and per-request data channels from the PC agent.
+RV_CONTROL_PORT=8766
+RV_DATA_PORT=8767

@@ -1,0 +1,14 @@
+[Unit]
+Description=RemoteVibecode PC bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Replace APP_DIR and THREAD_ID with this user's paths and chat ID.
+ExecStart=APP_DIR/start-bridge.sh THREAD_ID
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,27 @@
+[Unit]
+Description=RemoteVibecode private relay
+Documentation=file:/usr/share/doc/remotevibecode-relay/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+EnvironmentFile=-/etc/default/remotevibecode-relay
+LoadCredential=relay-secret:/etc/remotevibecode/relay-secret
+LoadCredential=relay-cert:/etc/remotevibecode/relay-cert
+LoadCredential=relay-key:/etc/remotevibecode/relay-key
+ExecStart=/usr/bin/python3 /usr/lib/remotevibecode/relay.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target
