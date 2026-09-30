@@ -102,6 +102,8 @@ internal data class LocalMessage(
     val threadId: String = "", val model: String? = null, val effort: String? = null,
     val acceptedByBridge: Boolean = false,
     val cancelRequested: Boolean = false,
+    val deliveredTurnId: String = "",
+    val steered: Boolean = false,
 )
 internal data class ThreadItem(val id: String, val title: String, val status: String, val updatedAt: Long)
 internal data class ProjectGroup(val id: String, val name: String, val cwd: String?, val threads: List<ThreadItem>)
@@ -145,6 +147,7 @@ internal fun fileSize(size: Long): String = when {
 @Composable
 internal fun CompanionUi(
     paired: Boolean,
+    relayOnly: Boolean,
     themeMode: String,
     onThemeMode: (String) -> Unit,
     title: String,
@@ -420,10 +423,12 @@ internal fun CompanionUi(
             if (!paired) {
                 Column(Modifier.fillMaxSize().padding(inner).padding(24.dp),
                     verticalArrangement = Arrangement.Center) {
-                    Text("RemoteVibecode", style = MaterialTheme.typography.headlineMedium,
+                    Text(if (relayOnly) "RemoteVibecode Relay" else "RemoteVibecode", style = MaterialTheme.typography.headlineMedium,
                         fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(12.dp))
-                    Text("Один раз подключите телефон к вашему ПК. Затем чаты и файлы будут доступны сразу.",
+                    Text(if (relayOnly)
+                        "Откройте агент RemoteVibecode на ПК и отсканируйте его QR-код. Телефон подключится через ваш ретранслятор; адрес сервера и отпечаток сертификата уже включены в код."
+                        else "Один раз подключите телефон к вашему ПК. Затем чаты и файлы будут доступны сразу.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.height(24.dp))
                     Button(onClick = onScan, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("Сканировать QR-код") }
@@ -594,23 +599,26 @@ internal fun CompanionUi(
                             Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.secondaryContainer,
                                 modifier = Modifier.fillMaxWidth(0.86f)) {
                                 Column(Modifier.padding(13.dp)) {
-                                    Text("В ОЧЕРЕДИ", style = MaterialTheme.typography.labelSmall,
+                                    Text(if (item.deliveredTurnId.isNotBlank())
+                                        (if (item.steered) "КОРРЕКТИРОВКА ОТПРАВЛЕНА" else "ОТПРАВЛЕНО")
+                                        else "В ОЧЕРЕДИ", style = MaterialTheme.typography.labelSmall,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.onSecondaryContainer)
                                     Spacer(Modifier.height(5.dp))
                                     Text(item.text.ifBlank { "Вложение · ${item.files.size}" },
                                         style = MaterialTheme.typography.bodyLarge)
                                     Spacer(Modifier.height(4.dp))
-                                    Text(if (item.cancelRequested) "Отменяю…" else if (item.acceptedByBridge)
+                                    Text(if (item.deliveredTurnId.isNotBlank()) "Ожидаю отображения в истории"
+                                        else if (item.cancelRequested) "Отменяю…" else if (item.acceptedByBridge)
                                         "В очереди Codex" else "Ожидает сети",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     Row {
-                                        if (item.acceptedByBridge && !item.cancelRequested)
+                                        if (item.acceptedByBridge && !item.cancelRequested && item.deliveredTurnId.isBlank())
                                             TextButton(onClick = { onSteerQueued(item) }) {
                                                 Text("Корректировать сейчас")
                                             }
-                                        TextButton(onClick = { onCancelQueued(item) }, enabled = !item.cancelRequested) {
+                                        if (item.deliveredTurnId.isBlank()) TextButton(onClick = { onCancelQueued(item) }, enabled = !item.cancelRequested) {
                                             Text("Убрать")
                                         }
                                     }

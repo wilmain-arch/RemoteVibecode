@@ -12,11 +12,25 @@ android {
         applicationId = "ru.wilmain.codexphone"
         minSdk = 26
         targetSdk = 35
-        versionCode = 21
-        versionName = "0.9.6"
+        versionCode = 22
+        versionName = "0.9.7"
     }
 
-    buildFeatures { compose = true }
+    flavorDimensions += "connection"
+    productFlavors {
+        create("personal") {
+            dimension = "connection"
+            buildConfigField("Boolean", "RELAY_ONLY", "false")
+        }
+        create("relay") {
+            dimension = "connection"
+            applicationIdSuffix = ".relay"
+            versionNameSuffix = "-relay"
+            buildConfigField("Boolean", "RELAY_ONLY", "true")
+        }
+    }
+
+    buildFeatures { compose = true; buildConfig = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

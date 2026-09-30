@@ -123,7 +123,8 @@ private fun readLocalQueue(prefs: android.content.SharedPreferences): List<Local
             item.optString("threadId"),
             if (item.isNull("model")) null else item.optString("model").ifBlank { null },
             if (item.isNull("effort")) null else item.optString("effort").ifBlank { null },
-            item.optBoolean("acceptedByBridge"), item.optBoolean("cancelRequested"))
+            item.optBoolean("acceptedByBridge"), item.optBoolean("cancelRequested"),
+            item.optString("deliveredTurnId"), item.optBoolean("steered"))
     }
 }.getOrDefault(emptyList())
 
@@ -135,7 +136,9 @@ private fun saveLocalQueue(prefs: android.content.SharedPreferences, messages: L
             .put("threadId", message.threadId).put("model", message.model)
             .put("effort", message.effort)
             .put("acceptedByBridge", message.acceptedByBridge)
-            .put("cancelRequested", message.cancelRequested))
+            .put("cancelRequested", message.cancelRequested)
+            .put("deliveredTurnId", message.deliveredTurnId)
+            .put("steered", message.steered))
     }
     prefs.edit().putString("localQueue", array.toString()).apply()
 }
@@ -148,6 +151,9 @@ private suspend fun pairFromCode(uri: Uri): PairResult {
     require(uri.scheme == "codexphone" && uri.host == "pair") { "Это не код приложения" }
     val host = uri.getQueryParameter("host") ?: error("Нет адреса ПК")
     val tailHost = uri.getQueryParameter("tailHost") ?: ""
+    if (BuildConfig.RELAY_ONLY) {
+        require(tailHost.isBlank()) { "Нужен QR-код агента для ретранслятора" }
+    }
     val pin = uri.getQueryParameter("pin") ?: error("Нет кода привязки")
     val fingerprint = (uri.getQueryParameter("fingerprint") ?: "")
         .filter { it.isLetterOrDigit() }.uppercase()
@@ -155,7 +161,8 @@ private suspend fun pairFromCode(uri: Uri): PairResult {
     val client = pinnedClient(fingerprint)
     val body = JSONObject().put("pin", pin).toString().toRequestBody("application/json".toMediaType())
     var lastError: Throwable? = null
-    for (candidate in listOf(host, tailHost).filter { it.isNotBlank() }) {
+    for (candidate in (if (BuildConfig.RELAY_ONLY) listOf(host) else listOf(host, tailHost))
+        .filter { it.isNotBlank() }) {
         try {
             val request = Request.Builder().url(candidate.trimEnd('/') + "/api/pair").post(body).build()
             val result = withContext(Dispatchers.IO) {
@@ -233,7 +240,9 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
     var token by remember { mutableStateOf(readSavedToken(context, prefs)) }
     var title by remember { mutableStateOf("Не подключено") }
     var projectName by remember { mutableStateOf("") }
-    var status by remember { mutableStateOf(if (token.isBlank()) "Сканируй QR-код на ПК один раз" else "Подключаюсь…") }
+    var status by remember { mutableStateOf(if (token.isBlank())
+        (if (BuildConfig.RELAY_ONLY) "Сканируй QR-код агента на ПК" else "Сканируй QR-код на ПК один раз")
+        else "Подключаюсь…") }
     var usageLimits by remember { mutableStateOf<UsageLimits?>(null) }
     var limitsLoading by remember { mutableStateOf(false) }
     var limitsError by remember { mutableStateOf("") }
@@ -304,7 +313,8 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
     }
 
     suspend fun <T> withReachableHost(block: suspend (String) -> T): T {
-        val choices = listOf(activeHost, host, tailHost).filter { it.isNotBlank() }.distinct()
+        val choices = (if (BuildConfig.RELAY_ONLY) listOf(host)
+            else listOf(activeHost, host, tailHost)).filter { it.isNotBlank() }.distinct()
         var lastError: Throwable? = null
         for (candidate in choices) {
             try {
@@ -481,6 +491,16 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
                     else -> "Подключено"
                 }
                 val latest = parseHistory(history)
+                val confirmed = latest.filter { it.role == "user" }
+                localQueue.removeAll { pending ->
+                    pending.deliveredTurnId.isNotBlank() && confirmed.any { line ->
+                        line.turnId == pending.deliveredTurnId &&
+                            ((pending.text.isNotBlank() && line.text.trim() == pending.text.trim()) ||
+                                (pending.text.isBlank() && pending.files.isNotEmpty() &&
+                                    (line.images.isNotEmpty() || line.attachments.isNotEmpty())))
+                    }
+                }
+                saveLocalQueue(prefs, localQueue.toList())
                 if (lines.isEmpty()) {
                     lines = latest
                     historyHasMore = history.optBoolean("hasMore")
@@ -740,10 +760,11 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
     }
 
     suspend fun deliverPending() {
-        if (token.isBlank() || delivering || localQueue.isEmpty()) return
+        if (token.isBlank() || delivering || localQueue.none { it.deliveredTurnId.isBlank() }) return
         delivering = true
         try {
             for (message in localQueue.toList()) {
+                if (message.deliveredTurnId.isNotBlank()) continue
                 if (message.cancelRequested) {
                     cancelQueued(message.id)
                     continue
@@ -786,7 +807,9 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
                     val index = localQueue.indexOfFirst { it.id == message.id }
                     if (index >= 0) localQueue[index] = localQueue[index].copy(acceptedByBridge = true)
                 } else {
-                    localQueue.removeAll { it.id == message.id }
+                    val index = localQueue.indexOfFirst { it.id == message.id }
+                    if (index >= 0) localQueue[index] = localQueue[index].copy(
+                        deliveredTurnId = result.optString("turnId"))
                 }
                 saveLocalQueue(prefs, localQueue.toList())
                 localQueueError = ""
@@ -896,7 +919,8 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
                 themeMode = value
                 prefs.edit().putString("themeMode", value).apply()
             },
-            paired = token.isNotBlank(), title = title, projectName = projectName,
+            paired = token.isNotBlank(), relayOnly = BuildConfig.RELAY_ONLY,
+            title = title, projectName = projectName,
             status = status, usageLimits = usageLimits, limitsLoading = limitsLoading,
             limitsError = limitsError, lines = lines, queue = localQueue.toList(),
             selectedThreadId = selectedThreadId, projects = projects.toList(),
@@ -1078,7 +1102,10 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
                                 }
                             } }
                         }.onSuccess { result ->
-                            localQueue.removeAll { it.id == message.id }
+                            val index = localQueue.indexOfFirst { it.id == message.id }
+                            if (index >= 0) localQueue[index] = localQueue[index].copy(
+                                deliveredTurnId = result.optString("turnId"),
+                                steered = result.optBoolean("steered"))
                             saveLocalQueue(prefs, localQueue.toList())
                             localQueueError = ""
                             status = if (result.optBoolean("steered"))
