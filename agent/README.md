@@ -1,46 +1,29 @@
-# RemoteVibecode Windows agent (preview)
+# Агент RemoteVibecode для Windows
 
-`RemoteVibecodeAgent.exe` runs the Codex bridge on the user's Windows PC and
-maintains an outbound connection to **that user's own** Debian/Ubuntu relay.
-The PC does not need an inbound router port. The relay never receives the
-bridge's TLS private key and forwards phone traffic without decrypting it.
+Агент запускает мост Codex на ПК и подключается к вашему серверу. Открывать входящие порты на домашнем роутере не нужно.
 
-## Requirements
+## Перед установкой
 
-- A running `remotevibecode-relay` on the user's server, with TCP ports 8765,
-  8766 and 8767 reachable from outside (unless configured otherwise).
-- Codex CLI installed and signed in **on this PC**, available as `codex` in
-  `PATH` or specified via `codexExecutable` in `agent.json`.
-- The Android RemoteVibecode app.
+- Установите [серверный ретранслятор](../relay/README.md). Порты TCP 8765, 8766 и 8767 должны быть доступны извне, если вы не изменили их в конфигурации.
+- Установите Codex CLI на этот ПК, войдите в свой аккаунт и убедитесь, что команда `codex` доступна через `PATH`. Другой путь можно указать параметром `codexExecutable` в `agent.json`.
+- Подготовьте [Android-приложение](../android/RELAY_APK.md).
 
-Download `RemoteVibecodeAgent.exe` from the matching preview release or build
-it using the GitHub Actions workflow `Windows agent EXE`. The EXE bundles
-Python and all application dependencies; Python is not required on the PC.
+## Подключение
 
-On first launch the desktop window asks for the relay's public DNS name or IPv4
-address, the relay TLS certificate SHA-256 fingerprint and its secret. Obtain
-the latter two **on the owner's server**:
+1. Скачайте `RemoteVibecodeAgent.exe` из [общего релиза](https://github.com/wilmain-arch/RemoteVibecode/releases/tag/bundle-v0.2.0) и запустите его. Устанавливать Python отдельно не требуется.
+2. Укажите публичное доменное имя или IPv4-адрес вашего сервера, отпечаток SHA-256 его TLS-сертификата и секрет ретранслятора. Получите два последних значения на сервере:
 
-```sh
-sudo cat /etc/remotevibecode/relay-secret
-openssl x509 -in /etc/remotevibecode/relay-cert -noout -fingerprint -sha256
-```
+   ```sh
+   sudo cat /etc/remotevibecode/relay-secret
+   openssl x509 -in /etc/remotevibecode/relay-cert -noout -fingerprint -sha256
+   ```
 
-The agent writes `%LOCALAPPDATA%\RemoteVibecode\agent.json`, creates a unique
-local bridge TLS certificate, displays a QR code in its window and starts the bridge. Scan the
-QR in Android. The QR expires after 30 minutes and is deleted after pairing or
-expiry. The server secret is stored only in the Windows user's AppData and must
-not be shared. The bridge listens only on `127.0.0.1`.
+3. Когда агент покажет QR-код, откройте RemoteVibecode Relay на телефоне и отсканируйте его. Код действует 30 минут и удаляется после привязки или истечения срока.
 
-To change server settings, open **Настройки** in the app. `--setup --cli` is
-available for console setup. To start with
-Windows sign-in, run `RemoteVibecodeAgent.exe --install-autostart`; to undo it,
-use `--remove-autostart`. The user can inspect or delete their local data in
-`%LOCALAPPDATA%\RemoteVibecode`.
+Секрет сервера хранится только на ПК в `%LOCALAPPDATA%\RemoteVibecode\agent.json`; не отправляйте его вместе с QR-кодом. Мост на ПК слушает только `127.0.0.1`. Ретранслятор передаёт трафик телефона, не получая закрытый TLS-ключ моста.
 
-The GUI has Overview, Devices, Connection and Settings screens. It shows real
-bridge/relay/pairing state; the bridge does not currently collect a phone model
-or name, so the device is shown generically. The legacy console mode is
-available with `--cli`. This preview supports one PC per relay server and
-one paired phone per PC bridge. The server and Windows executable have not yet been
-validated together on a real Windows installation.
+## Настройки
+
+Адрес сервера меняется в разделе **«Настройки»** агента. Для настройки через консоль доступен запуск с `--setup --cli`. Автозапуск при входе в Windows включается командой `RemoteVibecodeAgent.exe --install-autostart`, отключается командой `RemoteVibecodeAgent.exe --remove-autostart`.
+
+Текущая версия поддерживает один ПК на ретранслятор и один привязанный телефон на мост. Полный маршрут на реальном Windows-ПК и публичном сервере пока не проверен.
