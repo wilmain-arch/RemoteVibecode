@@ -200,7 +200,7 @@ class AgentWindow:
         self.heading(parent, title, subtitle)
         if self.error:
             self.text(parent, self.error[:125], 11, "#ffafae", wraplength=840).pack(anchor="w", pady=(0, 12))
-        row = tk.Frame(parent, bg=BG, height=390)
+        row = tk.Frame(parent, bg=BG, height=420)
         row.pack(fill="x")
         row.pack_propagate(False)
         left_outer, left = self.card(row)
@@ -239,9 +239,8 @@ class AgentWindow:
             labels.pack(side="left", padx=12)
             self.text(labels, title, 13, WHITE, "bold").pack(anchor="w")
             self.text(labels, description + (" · активен" if ok else " · ожидание"), 10, MUTED).pack(anchor="w")
-        self.text(right, "Соединение защищено TLS и привязкой к сертификату", 11, MUTED,
-                  wraplength=360).pack(anchor="w", pady=(22, 0))
-        lower_outer, lower = self.card(parent, 24, 18)
+        self.text(right, "TLS · проверка сертификата", 11, MUTED).pack(anchor="w", pady=(15, 0))
+        lower_outer, lower = self.card(parent, 24, 12)
         lower_outer.pack(fill="both", expand=True, pady=(14, 0))
         top = tk.Frame(lower, bg=CARD)
         top.pack(fill="x")
@@ -250,12 +249,11 @@ class AgentWindow:
         self.text(lower, "●  Телефон привязан" if paired else "Пока нет привязанных телефонов",
                   12, GREEN if paired else MUTED).pack(anchor="w", pady=(12, 0))
         address_row = tk.Frame(lower, bg=CARD)
-        address_row.pack(fill="x", pady=(20, 0))
+        address_row.pack(fill="x", pady=(12, 0))
         address_labels = tk.Frame(address_row, bg=CARD)
         address_labels.pack(side="left", fill="x", expand=True)
-        self.text(address_labels, "Адрес подключения", 12, WHITE, "bold").pack(anchor="w")
         public_address = f"https://{self.config['relayHost']}:{self.config['publicPort']}"
-        self.text(address_labels, public_address, 12, MUTED).pack(anchor="w", pady=(4, 0))
+        self.text(address_labels, "Адрес подключения  ·  " + public_address, 12, MUTED).pack(anchor="w")
         self.button(address_row, "Копировать", lambda: self.copy_address(public_address)).pack(side="right")
 
     def copy_address(self, address):
