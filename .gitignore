@@ -6,6 +6,10 @@ inbox/*
 outbox/*
 __pycache__/
 dist/
+arch/src/
+arch/pkg/
+arch/remotevibecode-source/
+arch/*.pkg.tar.zst
 *.key
 *.jks
 *.keystore

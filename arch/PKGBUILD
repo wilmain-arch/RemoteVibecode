@@ -1,15 +1,15 @@
 # Maintainer: wilmain <https://github.com/wilmain-arch>
 pkgname=remotevibecode-agent
 pkgver=0.1.1
-pkgrel=1
+pkgrel=4
 pkgdesc='Графический агент RemoteVibecode для подключения ПК к своему ретранслятору'
 arch=('any')
 url='https://github.com/wilmain-arch/RemoteVibecode'
-license=('unknown')
-depends=('python' 'python-cryptography' 'python-pillow' 'python-qrcode' 'tk' 'fontconfig')
+license=('LicenseRef-Unspecified')
+depends=('python' 'python-cryptography' 'python-pillow' 'python-qrcode' 'tk' 'fontconfig' 'hicolor-icon-theme')
 makedepends=('git')
-source=("remotevibecode-source::git+https://github.com/wilmain-arch/RemoteVibecode.git#tag=arch-v$pkgver")
-sha256sums=('SKIP')
+source=("remotevibecode-source::git+https://github.com/wilmain-arch/RemoteVibecode.git#tag=arch-v$pkgver" 'LICENSE')
+sha256sums=('SKIP' 'afcd093d88c9d39b81948032f73ab8a5baabeeb2c9fd44989c9e6826e9d1f54d')
 
 package() {
     local appdir="$pkgdir/usr/lib/remotevibecode-agent"
@@ -25,4 +25,6 @@ package() {
         "$pkgdir/usr/share/applications/remotevibecode-agent.desktop"
     install -Dm644 "$srcdir/remotevibecode-source/arch/remotevibecode-agent.png" \
         "$pkgdir/usr/share/icons/hicolor/256x256/apps/remotevibecode-agent.png"
+    install -Dm644 "$srcdir/LICENSE" \
+        "$pkgdir/usr/share/licenses/remotevibecode-agent/LICENSE"
 }
