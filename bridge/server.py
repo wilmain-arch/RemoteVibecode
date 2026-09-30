@@ -26,7 +26,7 @@ import os
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs, quote
+from urllib.parse import urlparse, parse_qs, quote, unquote
 try:
     from .adb_devices import AdbDevices
 except ImportError:
@@ -458,6 +458,29 @@ class Bridge:
         return {"rootName": root.name, "path": relative, "entries": entries[:200],
                 "truncated": len(entries) > 200}
 
+    def workspace_resolve(self, thread_id: str | None, reference: str) -> dict:
+        if not reference or len(reference) > 2048:
+            raise ValueError("Некорректная ссылка на файл")
+        reference = unquote(reference.split("#", 1)[0].split("?", 1)[0])
+        if reference.startswith("file://"):
+            reference = reference[7:]
+        root, _ = self.workspace_path(thread_id)
+        candidate = Path(reference)
+        if candidate.is_absolute():
+            try:
+                reference = str(candidate.relative_to(root))
+            except ValueError as exc:
+                raise ValueError("Ссылка вне папки проекта") from exc
+        if reference.startswith("./"):
+            reference = reference[2:]
+        _, path = self.workspace_path(thread_id, reference)
+        if not path.exists():
+            raise ValueError("Файл по ссылке не найден")
+        relative = str(path.relative_to(root))
+        return {"path": relative, "folder": relative if path.is_dir()
+                else ("" if path.parent == root else str(path.parent.relative_to(root))),
+                "isDirectory": path.is_dir()}
+
     def workspace_preview(self, thread_id: str | None, relative: str) -> dict:
         _, path = self.workspace_path(thread_id, relative)
         if not path.is_file():
@@ -764,6 +787,9 @@ class Bridge:
                 raise ValueError("Сообщение отменено")
             if client_message_id in self.sent_messages:
                 return self.sent_messages[client_message_id]
+            with self.turn_lock:
+                if thread_id in self.active_turns:
+                    raise BusyError("Задача выполняется")
             with self.state_lock:
                 missing = [file_id for file_id in file_ids if file_id not in self.pending]
                 if missing:
@@ -829,7 +855,13 @@ class Bridge:
                     params["model"] = model
                 if effort:
                     params["effort"] = effort
-                result = rpc.call("turn/start", params)
+                try:
+                    result = rpc.call("turn/start", params)
+                except RpcError as exc:
+                    if any(marker in str(exc).lower() for marker in
+                           ("active turn", "turn is active", "already active", "turn in progress")):
+                        raise BusyError("Задача выполняется") from exc
+                    raise
                 turn_id = (result.get("turn") or {}).get("id")
                 if turn_id:
                     with self.turn_lock:
@@ -894,6 +926,63 @@ class Bridge:
                         self.cancelled_sends.pop(next(iter(self.cancelled_sends)))
                     self._save_state()
                     return {"status": "cancelled"}
+
+    def steer_queued(self, client_message_id: str) -> dict:
+        with self.send_lock:
+            if client_message_id in self.sent_messages:
+                return self.sent_messages[client_message_id]
+            with self.queue_lock:
+                message = self.queued_sends.get(client_message_id)
+            if message is None:
+                raise ValueError("Сообщение уже вышло из очереди или отменено")
+            thread_id = self._thread_id(message.get("threadId"))
+            with self.state_lock:
+                attachments = [self.pending.get(file_id) for file_id in message.get("files", [])]
+            if any(item is None for item in attachments):
+                raise ValueError("Вложение больше недоступно")
+            input_items = [
+                {"type": "localImage", "path": item["path"]}
+                for item in attachments if item["mimeType"].startswith("image/")
+            ]
+            path_files = [item for item in attachments if not item["mimeType"].startswith("image/")]
+            final_text = str(message.get("text") or "").strip()
+            if path_files:
+                listing = "\n".join(f"- {item['name']}: {item['path']}" for item in path_files)
+                final_text = (final_text + "\n\n" if final_text else "") + "Переданные файлы (прочитай по этим путям):\n" + listing
+            if final_text:
+                input_items.append({"type": "text", "text": final_text})
+            if not input_items:
+                raise ValueError("Пустое сообщение")
+            with self.rpc_session() as rpc:
+                with self.turn_lock:
+                    active_turn_id = self.active_turns.get(thread_id)
+                if not active_turn_id:
+                    result = rpc.call("thread/read", {"threadId": thread_id, "includeTurns": True})
+                    turns = result.get("thread", {}).get("turns") or []
+                    for turn in reversed(turns):
+                        state = turn.get("status") or {}
+                        kind = state.get("type") if isinstance(state, dict) else state
+                        if kind in ("inProgress", "active", "running"):
+                            active_turn_id = turn.get("id")
+                            break
+                if not active_turn_id:
+                    raise ValueError("Сейчас нет активного хода для корректировки")
+                result = rpc.call("turn/steer", {"threadId": thread_id,
+                    "expectedTurnId": active_turn_id, "input": input_items,
+                    "clientUserMessageId": client_message_id})
+            response = {"turnId": result.get("turnId") or active_turn_id,
+                        "threadId": thread_id, "clientMessageId": client_message_id,
+                        "steered": True}
+            with self.queue_lock:
+                with self.state_lock:
+                    self.queued_sends.pop(client_message_id, None)
+                    for file_id in message.get("files", []):
+                        self.pending.pop(file_id, None)
+                    self.sent_messages[client_message_id] = response
+                    if len(self.sent_messages) > 512:
+                        self.sent_messages.pop(next(iter(self.sent_messages)))
+                    self._save_state()
+            return response
 
     def cancel_upload(self, file_id: str) -> dict:
         with self.upload_lock:
@@ -1108,6 +1197,15 @@ def main(argv: list[str] | None = None) -> None:
                 except ValueError as exc:
                     self.send_json(400, {"error": str(exc)})
                 return
+            if route == "/api/messages/steer":
+                try:
+                    message_id = self.read_json(4096).get("clientMessageId")
+                    if not isinstance(message_id, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", message_id):
+                        raise ValueError("Некорректный ID сообщения")
+                    self.send_json(200, bridge.steer_queued(message_id))
+                except (RpcError, ValueError) as exc:
+                    self.send_json(409, {"error": str(exc)})
+                return
             if route == "/api/upload/cancel":
                 try:
                     file_id = self.read_json(4096).get("id")
@@ -1216,6 +1314,9 @@ def main(argv: list[str] | None = None) -> None:
                 elif route == "/api/workspace":
                     relative = parse_qs(parsed.query).get("path", [""])[0]
                     self.send_json(200, bridge.workspace_list(thread_id, relative))
+                elif route == "/api/workspace/resolve":
+                    reference = parse_qs(parsed.query).get("path", [""])[0]
+                    self.send_json(200, bridge.workspace_resolve(thread_id, reference))
                 elif route == "/api/workspace/preview":
                     relative = parse_qs(parsed.query).get("path", [""])[0]
                     self.send_json(200, bridge.workspace_preview(thread_id, relative))

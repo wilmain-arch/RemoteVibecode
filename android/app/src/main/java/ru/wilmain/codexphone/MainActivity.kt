@@ -275,6 +275,7 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
     var transferringFileId by remember { mutableStateOf("") }
     var fileStatus by remember { mutableStateOf("") }
     var selectedOutbox by remember { mutableStateOf<RemoteFile?>(null) }
+    var selectedChatImage by remember { mutableStateOf<ChatImage?>(null) }
     var activeUploadJob by remember { mutableStateOf<Job?>(null) }
     var activeDownloadJob by remember { mutableStateOf<Job?>(null) }
     val activeTransferCall = remember { AtomicReference<Call?>() }
@@ -318,6 +319,30 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
             }
         }
         throw lastError ?: IllegalStateException("Не задан адрес ПК")
+    }
+
+    suspend fun fetchImage(endpoint: String): ByteArray = withReachableHost { root ->
+        withContext(Dispatchers.IO) {
+            val request = Request.Builder().url(root + endpoint)
+                .header("Authorization", "Bearer $token").get().build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) error("ПК вернул ошибку ${response.code}")
+                val limit = 20 * 1024 * 1024
+                val body = response.body ?: error("Пустой ответ")
+                if (body.contentLength() > limit) error("Изображение слишком большое")
+                val output = ByteArrayOutputStream()
+                body.byteStream().use { stream ->
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        val count = stream.read(buffer)
+                        if (count < 0) break
+                        if (output.size() + count > limit) error("Изображение слишком большое")
+                        output.write(buffer, 0, count)
+                    }
+                }
+                output.toByteArray()
+            }
+        }
     }
 
     suspend fun cleanupPendingFiles() {
@@ -393,6 +418,26 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
                 transferProgress = null
                 activeDownloadJob = null
             }
+            }
+        }
+    }
+    val saveChatImagePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("image/*")) { uri ->
+        val image = selectedChatImage
+        if (uri != null && image != null) {
+            scope.launch {
+                status = "Сохраняю ${image.name}…"
+                runCatching {
+                    val bytes = fetchImage("/api/chat/image?id=${Uri.encode(image.id)}")
+                    withContext(Dispatchers.IO) {
+                        context.contentResolver.openOutputStream(uri, "wt")?.use { it.write(bytes) }
+                            ?: error("Не удалось открыть выбранный файл")
+                    }
+                }.onSuccess { status = "Изображение сохранено: ${image.name}" }
+                    .onFailure {
+                        runCatching { context.contentResolver.delete(uri, null, null) }
+                        status = "Не удалось сохранить изображение: ${it.message}"
+                    }
             }
         }
     }
@@ -970,32 +1015,22 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
                 fileStatus = ""
                 savePicker.launch(entry.name)
             },
-            onLoadOlder = { scope.launch { loadOlderHistory() } },
-            loadImage = { endpoint ->
-                withReachableHost { root -> withContext(Dispatchers.IO) {
-                    val request = Request.Builder().url(root + endpoint)
-                        .header("Authorization", "Bearer $token").get().build()
-                    client.newCall(request).execute().use { response ->
-                        if (!response.isSuccessful) error("ПК вернул ошибку ${response.code}")
-                        val limit = 20 * 1024 * 1024
-                        val body = response.body ?: error("Пустой ответ")
-                        if (body.contentLength() > limit) error("Изображение слишком большое")
-                        val output = ByteArrayOutputStream()
-                        body.byteStream().use { stream ->
-                            val buffer = ByteArray(64 * 1024)
-                            while (true) {
-                                val count = stream.read(buffer)
-                                if (count < 0) break
-                                if (output.size() + count > limit) error("Изображение слишком большое")
-                                output.write(buffer, 0, count)
-                            }
-                        }
-                        val bytes = output.toByteArray()
-                        if (bytes.size > limit) error("Изображение слишком большое")
-                        bytes
-                    }
-                } }
+            onResolveProjectFile = { reference ->
+                runCatching {
+                    val response = withReachableHost { root -> withContext(Dispatchers.IO) {
+                        requestJson(client,
+                            "$root/api/workspace/resolve?threadId=${Uri.encode(selectedThreadId)}&path=${Uri.encode(reference)}",
+                            token)
+                    } }
+                    response.optString("folder")
+                }.onFailure { status = "Не удалось открыть файл проекта: ${it.message}" }.getOrNull()
             },
+            onSaveChatImage = { image ->
+                selectedChatImage = image
+                saveChatImagePicker.launch(image.name.ifBlank { "image.png" })
+            },
+            onLoadOlder = { scope.launch { loadOlderHistory() } },
+            loadImage = { endpoint -> fetchImage(endpoint) },
             onSend = {
                 val pending = LocalMessage(UUID.randomUUID().toString(), input,
                     files.map { it.id }, selectedThreadId,
@@ -1024,6 +1059,36 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
                     saveLocalQueue(prefs, localQueue.toList())
                     scope.launch { runCatching { cancelQueued(message.id) }
                         .onFailure { status = "Отмена ждёт связи с ПК" } }
+                }
+            },
+            onSteerQueued = { message ->
+                if (message.acceptedByBridge && !message.cancelRequested) {
+                    scope.launch {
+                        val body = JSONObject().put("clientMessageId", message.id).toString()
+                            .toRequestBody("application/json".toMediaType())
+                        runCatching {
+                            withReachableHost { root -> withContext(Dispatchers.IO) {
+                                val request = Request.Builder().url("$root/api/messages/steer")
+                                    .header("Authorization", "Bearer $token").post(body).build()
+                                client.newCall(request).execute().use { response ->
+                                    val result = JSONObject(response.body?.string().orEmpty())
+                                    if (!response.isSuccessful)
+                                        error(result.optString("error", "Корректировка не принята"))
+                                    result
+                                }
+                            } }
+                        }.onSuccess { result ->
+                            localQueue.removeAll { it.id == message.id }
+                            saveLocalQueue(prefs, localQueue.toList())
+                            localQueueError = ""
+                            status = if (result.optBoolean("steered"))
+                                "Корректировка отправлена в текущий ход"
+                            else "Сообщение уже отправлено отдельным ходом"
+                            runCatching { refresh() }
+                        }.onFailure {
+                            status = "Корректировка не отправлена: ${it.message}"
+                        }
+                    }
                 }
             },
             onCancelTransfer = {

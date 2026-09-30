@@ -50,6 +50,8 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberDrawerState
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -196,9 +198,12 @@ internal fun CompanionUi(
     onPreviewWorkspace: (String) -> Unit,
     onAskWorkspace: (String) -> Unit,
     onSaveWorkspace: (WorkspaceEntry) -> Unit,
+    onResolveProjectFile: suspend (String) -> String?,
+    onSaveChatImage: (ChatImage) -> Unit,
     onLoadOlder: () -> Unit,
     onSend: () -> Unit,
     onCancelQueued: (LocalMessage) -> Unit,
+    onSteerQueued: (LocalMessage) -> Unit,
     onCancelTransfer: () -> Unit,
     onDisconnect: () -> Unit,
     loadImage: suspend (String) -> ByteArray,
@@ -212,6 +217,8 @@ internal fun CompanionUi(
     var filesOpen by remember { mutableStateOf(false) }
     var projectsOpen by remember { mutableStateOf(false) }
     var devicesOpen by remember { mutableStateOf(false) }
+    var openedImage by remember { mutableStateOf<ChatImage?>(null) }
+    val scope = rememberCoroutineScope()
     LaunchedEffect(projectsOpen) {
         while (projectsOpen) {
             onRefreshLimits()
@@ -323,6 +330,26 @@ internal fun CompanionUi(
             bottomBar = {
                 if (paired) Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background).imePadding().navigationBarsPadding()
                     .padding(horizontal = 14.dp, vertical = 8.dp)) {
+                    if (visibleQueue.isNotEmpty()) {
+                        val next = visibleQueue.first()
+                        Surface(shape = RoundedCornerShape(15.dp),
+                            color = MaterialTheme.colorScheme.secondaryContainer,
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
+                            Row(Modifier.fillMaxWidth().padding(start = 13.dp, end = 7.dp, top = 5.dp, bottom = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("В очереди · ${visibleQueue.size}",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.SemiBold)
+                                    Text(next.text.ifBlank { "Сообщение с вложением" }, maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = MaterialTheme.typography.bodySmall)
+                                }
+                                if (next.acceptedByBridge && !next.cancelRequested)
+                                    TextButton(onClick = { onSteerQueued(next) }) { Text("Корректировать") }
+                            }
+                        }
+                    }
                     Surface(shape = RoundedCornerShape(22.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant) {
                         Column(Modifier.padding(horizontal = 8.dp, vertical = 5.dp)) {
@@ -437,7 +464,16 @@ internal fun CompanionUi(
                                     color = MaterialTheme.colorScheme.surfaceVariant,
                                     modifier = Modifier.fillMaxWidth(0.88f)) {
                                     Column(Modifier.padding(14.dp)) {
-                                        if (line.text.isNotBlank()) MarkdownContent(line.text)
+                                        if (line.text.isNotBlank()) SelectionContainer {
+                                            MarkdownContent(line.text, onProjectFile = { reference ->
+                                                scope.launch {
+                                                    onResolveProjectFile(reference)?.let { folder ->
+                                                        onBrowseWorkspace(folder)
+                                                        filesOpen = true
+                                                    }
+                                                }
+                                            })
+                                        }
                                         line.attachments.forEach { name ->
                                             Surface(shape = RoundedCornerShape(10.dp),
                                                 color = MaterialTheme.colorScheme.background,
@@ -455,7 +491,7 @@ internal fun CompanionUi(
                                         line.images.forEach { image ->
                                             RemoteImage("/api/chat/image?id=${Uri.encode(image.id)}", image.name,
                                                 loadImage, Modifier.fillMaxWidth().height(260.dp)
-                                                    .padding(top = 9.dp))
+                                                    .padding(top = 9.dp).clickable { openedImage = image })
                                         }
                                     }
                                 }
@@ -531,11 +567,20 @@ internal fun CompanionUi(
                                     }
                                 }
                                 Spacer(Modifier.height(8.dp))
-                                MarkdownContent(line.text)
+                                SelectionContainer {
+                                    MarkdownContent(line.text, onProjectFile = { reference ->
+                                        scope.launch {
+                                            onResolveProjectFile(reference)?.let { folder ->
+                                                onBrowseWorkspace(folder)
+                                                filesOpen = true
+                                            }
+                                        }
+                                    })
+                                }
                                 line.images.forEach { image ->
                                     RemoteImage("/api/chat/image?id=${Uri.encode(image.id)}", image.name,
                                         loadImage, Modifier.fillMaxWidth().height(260.dp)
-                                            .padding(top = 8.dp))
+                                            .padding(top = 8.dp).clickable { openedImage = image })
                                 }
                                 TextButton(onClick = { clipboard.setText(AnnotatedString(line.text)) },
                                     contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)) {
@@ -546,9 +591,13 @@ internal fun CompanionUi(
                     }
                     items(visibleQueue, key = { "queue:${it.id}" }) { item ->
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                            Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceVariant,
+                            Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.secondaryContainer,
                                 modifier = Modifier.fillMaxWidth(0.86f)) {
                                 Column(Modifier.padding(13.dp)) {
+                                    Text("В ОЧЕРЕДИ", style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSecondaryContainer)
+                                    Spacer(Modifier.height(5.dp))
                                     Text(item.text.ifBlank { "Вложение · ${item.files.size}" },
                                         style = MaterialTheme.typography.bodyLarge)
                                     Spacer(Modifier.height(4.dp))
@@ -556,8 +605,14 @@ internal fun CompanionUi(
                                         "В очереди Codex" else "Ожидает сети",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    TextButton(onClick = { onCancelQueued(item) }, enabled = !item.cancelRequested) {
-                                        Text("Отменить")
+                                    Row {
+                                        if (item.acceptedByBridge && !item.cancelRequested)
+                                            TextButton(onClick = { onSteerQueued(item) }) {
+                                                Text("Корректировать сейчас")
+                                            }
+                                        TextButton(onClick = { onCancelQueued(item) }, enabled = !item.cancelRequested) {
+                                            Text("Убрать")
+                                        }
                                     }
                                 }
                             }
@@ -566,6 +621,28 @@ internal fun CompanionUi(
                 }
             }
         }
+    openedImage?.let { image ->
+        Dialog(onDismissRequest = { openedImage = null },
+            properties = DialogProperties(usePlatformDefaultWidth = false)) {
+            Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                Column(Modifier.fillMaxSize().navigationBarsPadding().padding(16.dp)) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(onClick = { openedImage = null }) { Text("Закрыть") }
+                        Text(image.name, Modifier.weight(1f), maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.titleSmall)
+                        TextButton(onClick = { onSaveChatImage(image) }) {
+                            UiGlyph(UiIcon.Download, size = 18.dp)
+                            Spacer(Modifier.width(5.dp))
+                            Text("Скачать")
+                        }
+                    }
+                    RemoteImage("/api/chat/image?id=${Uri.encode(image.id)}", image.name,
+                        loadImage, Modifier.fillMaxWidth().weight(1f))
+                }
+            }
+        }
+    }
     if (modelSheet) ModalBottomSheet(onDismissRequest = { modelSheet = false }) {
         Column(Modifier.fillMaxWidth().navigationBarsPadding().verticalScroll(rememberScrollState())
             .padding(start = 18.dp, end = 18.dp, bottom = 36.dp)) {

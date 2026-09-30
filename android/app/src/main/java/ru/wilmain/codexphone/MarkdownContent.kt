@@ -36,7 +36,8 @@ private val tableDivider = Regex("^\\|?[ :|\\-]+\\|?$")
 @Composable
 private fun InlineMarkdown(value: String, modifier: Modifier = Modifier,
                            color: Color = MaterialTheme.colorScheme.onSurface,
-                           bold: Boolean = false, compact: Boolean = false) {
+                           bold: Boolean = false, compact: Boolean = false,
+                           onProjectFile: ((String) -> Unit)? = null) {
     val uriHandler = LocalUriHandler.current
     val clipboard = LocalClipboardManager.current
     val builder = AnnotatedString.Builder()
@@ -87,7 +88,8 @@ private fun InlineMarkdown(value: String, modifier: Modifier = Modifier,
                 uriHandler.openUri(it.item)
             }
             builder.toAnnotatedString().getStringAnnotations("path", offset, offset).firstOrNull()?.let {
-                clipboard.setText(AnnotatedString(it.item))
+                if (onProjectFile != null) onProjectFile(it.item)
+                else clipboard.setText(AnnotatedString(it.item))
             }
         })
 }
@@ -95,7 +97,8 @@ private fun InlineMarkdown(value: String, modifier: Modifier = Modifier,
 private fun tableCells(line: String): List<String> = line.trim().trim('|').split('|').map { it.trim() }
 
 @Composable
-internal fun MarkdownContent(markdown: String, modifier: Modifier = Modifier, compact: Boolean = false) {
+internal fun MarkdownContent(markdown: String, modifier: Modifier = Modifier, compact: Boolean = false,
+                             onProjectFile: ((String) -> Unit)? = null) {
     val lines = markdown.trim().lines()
     Column(modifier, verticalArrangement = Arrangement.spacedBy(if (compact) 7.dp else 9.dp)) {
         var index = 0
@@ -150,7 +153,7 @@ internal fun MarkdownContent(markdown: String, modifier: Modifier = Modifier, co
                                         InlineMarkdown(cells.getOrElse(column) { "" },
                                             Modifier.width(if (compact) 126.dp else 150.dp)
                                                 .padding(horizontal = 8.dp, vertical = if (compact) 6.dp else 5.dp),
-                                            bold = rowIndex == 0, compact = compact)
+                                            bold = rowIndex == 0, compact = compact, onProjectFile = onProjectFile)
                                     }
                                 }
                             }
@@ -172,7 +175,7 @@ internal fun MarkdownContent(markdown: String, modifier: Modifier = Modifier, co
                         color = MaterialTheme.colorScheme.surfaceVariant) {
                         InlineMarkdown(line.trimStart().removePrefix("> "),
                             Modifier.fillMaxWidth().padding(start = 12.dp, top = 8.dp, end = 8.dp, bottom = 8.dp),
-                            compact = compact)
+                            compact = compact, onProjectFile = onProjectFile)
                     }
                     index++
                 }
@@ -184,7 +187,8 @@ internal fun MarkdownContent(markdown: String, modifier: Modifier = Modifier, co
                     val content = if (marker == "•") trimmed.drop(2) else trimmed.substringAfter(' ')
                     Row(Modifier.fillMaxWidth()) {
                         Text(marker, Modifier.width(24.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        InlineMarkdown(content, Modifier.weight(1f), compact = compact)
+                        InlineMarkdown(content, Modifier.weight(1f), compact = compact,
+                            onProjectFile = onProjectFile)
                     }
                     index++
                 }
@@ -196,7 +200,8 @@ internal fun MarkdownContent(markdown: String, modifier: Modifier = Modifier, co
                         !lines[index].trimStart().startsWith("- ") && !lines[index].trimStart().startsWith("> ")) {
                         paragraph.append('\n').append(lines[index]); index++
                     }
-                    InlineMarkdown(paragraph.toString(), Modifier.fillMaxWidth(), compact = compact)
+                    InlineMarkdown(paragraph.toString(), Modifier.fillMaxWidth(), compact = compact,
+                        onProjectFile = onProjectFile)
                 }
             }
         }
