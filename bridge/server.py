@@ -1385,12 +1385,21 @@ def main(argv: list[str] | None = None) -> None:
     class Server(ThreadingHTTPServer):
         daemon_threads = True
         allow_reuse_address = True
+        request_queue_size = 128
+
+        def finish_request(self, request, client_address):
+            # The socket must be accepted before a TLS handshake can block.
+            # ThreadingHTTPServer runs finish_request in a worker thread.
+            request.settimeout(10)
+            with self.tls.wrap_socket(request, server_side=True) as secured:
+                secured.settimeout(None)
+                Handler(secured, client_address, self)
 
     server = Server((args.bind, args.port), Handler)
     tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     tls.minimum_version = ssl.TLSVersion.TLSv1_2
     tls.load_cert_chain(str(args.cert), str(args.key))
-    server.socket = tls.wrap_socket(server.socket, server_side=True)
+    server.tls = tls
     print(f"Codex Phone Bridge слушает {args.bind}:{args.port}", flush=True)
     print(f"Задача: {args.thread}", flush=True)
     print("Код первичной привязки хранится отдельно и действует 30 минут.", flush=True)

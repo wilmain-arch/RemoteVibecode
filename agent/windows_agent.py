@@ -160,14 +160,26 @@ def proof(secret: str, value: str) -> str:
 
 
 def tunnel(config: dict, connection_id: str) -> None:
+    def close_channel(channel: socket.socket) -> None:
+        try:
+            channel.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        channel.close()
+
     local = remote = None
+    stage = "подключение к серверу"
     try:
-        local = socket.create_connection(("127.0.0.1", config["bridgePort"]), timeout=10)
         remote = pinned_connection(config["relayHost"], config["dataPort"], config["relayFingerprint"])
+        stage = "подтверждение канала"
         write_json(remote, {"id": connection_id,
                             "proof": proof(config["relaySecret"], "data:" + connection_id)})
         if read_json(remote).get("ready") is not True:
             raise ConnectionError("Сервер отклонил канал данных")
+        # Do not occupy the bridge's accept queue before the relay is ready to
+        # forward the phone's TLS handshake.
+        stage = "локальный мост"
+        local = socket.create_connection(("127.0.0.1", config["bridgePort"]), timeout=10)
         local.settimeout(None)
         remote.settimeout(None)
 
@@ -178,20 +190,20 @@ def tunnel(config: dict, connection_id: str) -> None:
             except (OSError, ssl.SSLError):
                 pass
             finally:
-                source.close()
-                destination.close()
+                close_channel(source)
+                close_channel(destination)
 
         uplink = threading.Thread(target=copy, args=(local, remote), daemon=True)
         uplink.start()
         copy(remote, local)
         uplink.join(timeout=2)
     except (OSError, ValueError, ConnectionError) as error:
-        print(f"Канал телефона: {error}", flush=True)
+        print(f"Канал телефона ({stage}): {error}", flush=True)
     finally:
         if local is not None:
-            local.close()
+            close_channel(local)
         if remote is not None:
-            remote.close()
+            close_channel(remote)
 
 
 def relay_loop(config: dict, status=None, stop=None) -> None:

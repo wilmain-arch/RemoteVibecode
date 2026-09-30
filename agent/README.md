@@ -10,7 +10,7 @@
 
 ## Подключение
 
-1. Скачайте `RemoteVibecodeAgent.exe` из [релиза Windows-агента](https://github.com/wilmain-arch/RemoteVibecode/releases/tag/agent-v0.1.3) и запустите его. Устанавливать Python отдельно не требуется.
+1. Скачайте `RemoteVibecodeAgent.exe` из [релиза Windows-агента](https://github.com/wilmain-arch/RemoteVibecode/releases/tag/agent-v0.1.4) и запустите его. Устанавливать Python отдельно не требуется.
 2. Укажите публичное доменное имя или IPv4-адрес вашего сервера, отпечаток SHA-256 его TLS-сертификата и секрет ретранслятора. Получите два последних значения на сервере:
 
    ```sh
