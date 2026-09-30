@@ -24,14 +24,11 @@ BLUE = "#536dff"
 CYAN = "#00d3e9"
 
 
-def _shell(draw: ImageDraw.ImageDraw, page: str) -> None:
+def _shell(image: Image.Image, draw: ImageDraw.ImageDraw, page: str, icon_path: Path) -> None:
     draw.rounded_rectangle((22, 29, 319, 914), radius=23, fill=SIDE, outline=EDGE)
-    x, y = 45, 67
-    draw.line([(x + 8, y + 29), (x + 24, y + 40), (x + 8, y + 51)], fill=WHITE, width=7, joint="curve")
-    draw.line((x + 30, y + 53, x + 48, y + 53), fill=WHITE, width=6)
-    for distance, shade in ((12, "#783dff"), (20, "#3d73ff"), (28, CYAN)):
-        draw.arc((x + 13, y + 40 - distance, x + 13 + 2 * distance, y + 40 + distance),
-                 306, 53, fill=shade, width=6)
+    with Image.open(icon_path) as source:
+        logo = source.convert("RGBA").resize((76, 76), Image.Resampling.LANCZOS)
+    image.paste(logo, (43, 70), logo)
     draw.text((138, 94), "RemoteVibecode", font=_font(18, True), fill=WHITE)
     for index, (name, symbol) in enumerate((("Обзор", "home"), ("Устройства", "phone"),
                                              ("Подключение", "link"), ("Настройки", "gear"))):
@@ -64,6 +61,7 @@ def _shell(draw: ImageDraw.ImageDraw, page: str) -> None:
                 draw.ellipse((icon_x + dx - 2, icon_y + dy - 2,
                               icon_x + dx + 2, icon_y + dy + 2), fill=color)
         draw.text((117, icon_y + 3), name, font=_font(20, selected), fill=WHITE if selected else MUTED)
+    draw.text((48, 868), "Закрытие окна — в трей", font=_font(14), fill=DIM)
 
 
 @lru_cache(maxsize=40)
@@ -159,7 +157,7 @@ def render_dashboard(*, icon_path: Path, qr_path: Path | None, configured: bool,
         image.paste(gradient, (x1, y1), mask)
 
     # The coordinate system follows the supplied 1672 × 941 reference.
-    _shell(draw, "Обзор")
+    _shell(image, draw, "Обзор", icon_path)
 
     ready = configured and bridge_ready and relay_ready
     txt((375, 52), "Ваш компьютер готов" if ready else
@@ -254,7 +252,7 @@ def render_page(*, page: str, configured: bool, paired: bool, relay_ready: bool,
     image.paste(glow.filter(ImageFilter.GaussianBlur(140)), (0, 0),
                 glow.filter(ImageFilter.GaussianBlur(140)))
     draw = ImageDraw.Draw(image)
-    _shell(draw, page)
+    _shell(image, draw, page, Path(__file__).with_name("remotevibecode.ico"))
 
     def panel(box, radius=22, fill=CARD):
         draw.rounded_rectangle(box, radius=radius, fill=fill, outline=EDGE, width=1)

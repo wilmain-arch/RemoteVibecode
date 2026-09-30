@@ -27,7 +27,7 @@ jobs:
       - name: Build executable
         run: >-
           python -m PyInstaller --onefile --windowed --clean --noconfirm
-          --paths . --hidden-import qrcode.image.pil
+          --paths . --hidden-import qrcode.image.pil --hidden-import pystray._win32
           --icon agent/remotevibecode.ico
           --add-data "agent/remotevibecode.ico;agent"
           --name RemoteVibecodeAgent agent/windows_agent.py

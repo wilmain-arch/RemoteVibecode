@@ -4,10 +4,10 @@
 
 ## Установка
 
-Скачайте `remotevibecode-agent-0.1.5-1-any.pkg.tar.zst` из [репозитория](https://github.com/wilmain-arch/RemoteVibecode/tree/main/releases), затем выполните:
+Скачайте `remotevibecode-agent-0.1.6-1-any.pkg.tar.zst` из [репозитория](https://github.com/wilmain-arch/RemoteVibecode/tree/main/releases), затем выполните:
 
 ```sh
-sudo pacman -U ./remotevibecode-agent-0.1.5-1-any.pkg.tar.zst
+sudo pacman -U ./remotevibecode-agent-0.1.6-1-any.pkg.tar.zst
 remotevibecode-agent
 ```
 
@@ -16,5 +16,7 @@ remotevibecode-agent
 При первом запуске укажите адрес, отпечаток сертификата и секрет своего [ретранслятора](../relay/README.md). После подключения агент покажет QR-код для [Android-приложения](../android/RELAY_APK.md). Секрет и ключ моста хранятся в `~/.config/RemoteVibecode/` с правами только для владельца.
 
 Пакет не устанавливает Codex и не авторизует его автоматически. Если поле пути пустое, агент сначала ищет `/usr/lib/chatgpt/resources/codex`, затем `codex` в `PATH`. При необходимости укажите путь вручную.
+
+Кнопка закрытия скрывает окно в системный трей; агент продолжает работу. Через меню значка можно открыть окно или завершить агент.
 
 Для пересборки пакета скачайте исходники и выполните `makepkg -si` в каталоге `arch/`. Пакет публикуется как файл для `pacman -U`; отдельного репозитория для установки через `pacman -S` пока нет.

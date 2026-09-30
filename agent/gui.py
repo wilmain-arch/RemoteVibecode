@@ -13,6 +13,7 @@ import tkinter as tk
 from urllib import request
 
 from PIL import Image, ImageTk
+import pystray
 
 from agent.dashboard import WIDTH as DASH_WIDTH, HEIGHT as DASH_HEIGHT, render_dashboard, render_page
 from agent.windows_agent import ensure_certificate, load_config, load_config_from_dict, pairing_image, run_agent
@@ -33,8 +34,16 @@ class AgentWindow:
         self.root.geometry("1500x845")
         self.root.minsize(1040, 620)
         self.root.configure(bg=BG)
+        icon_path = Path(__file__).with_name("remotevibecode.ico")
+        with Image.open(icon_path) as source:
+            self.window_icon = ImageTk.PhotoImage(source.convert("RGBA").resize((64, 64)))
+        self.root.iconphoto(True, self.window_icon)
+        if sys.platform == "win32":
+            self.root.iconbitmap(default=str(icon_path))
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self.events: queue.Queue[tuple] = queue.Queue()
+        self.tray_ready = False
+        self.tray_icon = None
         self.stop = threading.Event()
         self.started = False
         self.bridge_ready = False
@@ -58,13 +67,52 @@ class AgentWindow:
         self.last_paired = self.paired()
         self.dashboard_image = None
         self.draw()
+        self.start_tray()
         self.root.after(250, self.poll)
         if self.configured:
             self.start_agent()
 
     def close(self):
+        if self.tray_ready:
+            self.root.withdraw()
+        else:
+            # Keep the agent reachable while the tray is starting or unavailable.
+            self.root.iconify()
+
+    def show_window(self):
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+
+    def exit_agent(self):
         self.stop.set()
+        if self.tray_icon is not None:
+            self.tray_icon.stop()
         self.root.destroy()
+
+    def start_tray(self):
+        icon_path = Path(__file__).with_name("remotevibecode.ico")
+        with Image.open(icon_path) as source:
+            icon_image = source.convert("RGBA").resize((64, 64), Image.Resampling.LANCZOS)
+        self.tray_icon = pystray.Icon(
+            "RemoteVibecode", icon_image, "RemoteVibecode",
+            menu=pystray.Menu(
+                pystray.MenuItem("Открыть", lambda icon, item: self.events.put(("tray_open",)), default=True),
+                pystray.MenuItem("Выйти", lambda icon, item: self.events.put(("tray_exit",))),
+            ),
+        )
+
+        def run_tray():
+            try:
+                def ready(icon):
+                    icon.visible = True
+                    self.events.put(("tray_ready",))
+
+                self.tray_icon.run(setup=ready)
+            except Exception as exc:
+                self.events.put(("tray_error", str(exc)))
+
+        threading.Thread(target=run_tray, name="RemoteVibecode tray", daemon=True).start()
 
     def start_agent(self):
         if self.started:
@@ -100,6 +148,20 @@ class AgentWindow:
                 self.error = event[1]
             elif event[0] == "message":
                 self.message = event[1]
+            elif event[0] == "tray_ready":
+                self.tray_ready = True
+                if self.root.state() == "iconic":
+                    self.root.withdraw()
+            elif event[0] == "tray_open":
+                self.show_window()
+            elif event[0] == "tray_exit":
+                self.exit_agent()
+                return
+            elif event[0] == "tray_error":
+                self.tray_ready = False
+                if self.root.state() == "withdrawn":
+                    self.show_window()
+                print(f"Значок в трее недоступен: {event[1]}", flush=True)
             changed = True
         if changed:
             self.draw()
