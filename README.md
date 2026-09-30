@@ -6,10 +6,10 @@
 
 | Устройство | Файл |
 | --- | --- |
-| Android | [RemoteVibecode.apk](https://github.com/wilmain-arch/RemoteVibecode/releases/download/bundle-v0.3.1/RemoteVibecode-0.9.9.apk) |
-| ПК с Windows | [RemoteVibecodeAgent.exe](https://github.com/wilmain-arch/RemoteVibecode/releases/download/bundle-v0.3.1/RemoteVibecodeAgent.exe) |
-| ПК с Arch Linux | [remotevibecode-agent.pkg.tar.zst](https://github.com/wilmain-arch/RemoteVibecode/releases/download/bundle-v0.3.1/remotevibecode-agent-0.1.7-1-any.pkg.tar.zst) |
-| Сервер Debian 13 / Ubuntu 26.04 | [remotevibecode-relay.deb](https://github.com/wilmain-arch/RemoteVibecode/releases/download/bundle-v0.3.1/remotevibecode-relay_0.1.0_all.deb) |
+| Android | [RemoteVibecode.apk](https://github.com/wilmain-arch/RemoteVibecode/releases/download/bundle-v0.3.2/RemoteVibecode-0.9.10.apk) |
+| ПК с Windows | [RemoteVibecodeAgent.exe](https://github.com/wilmain-arch/RemoteVibecode/releases/download/bundle-v0.3.2/RemoteVibecodeAgent.exe) |
+| ПК с Arch Linux | [remotevibecode-agent.pkg.tar.zst](https://github.com/wilmain-arch/RemoteVibecode/releases/download/bundle-v0.3.2/remotevibecode-agent-0.1.7-1-any.pkg.tar.zst) |
+| Сервер Debian 13 / Ubuntu 26.04 | [remotevibecode-relay.deb](https://github.com/wilmain-arch/RemoteVibecode/releases/download/bundle-v0.3.2/remotevibecode-relay_0.1.0_all.deb) |
 
 ## Подключить
 

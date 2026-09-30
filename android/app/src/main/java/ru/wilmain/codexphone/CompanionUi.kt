@@ -232,6 +232,9 @@ internal fun CompanionUi(
     val expandedProcesses = remember { mutableStateMapOf<String, Boolean>() }
     val visibleQueue = queue.filter { it.threadId.isBlank() || it.threadId == selectedThreadId }
     val visibleLines = lines
+    val selectedProjectName = projects.firstOrNull { group ->
+        group.id != "other" && group.threads.any { it.id == selectedThreadId }
+    }?.name.orEmpty()
     LaunchedEffect(selectedThreadId, visibleLines.lastOrNull()?.id, visibleQueue.size) {
         val total = visibleLines.size + visibleQueue.size + if (historyHasMore || historyLoading || historyError.isNotBlank()) 1 else 0
         if (total > 0) {
@@ -272,7 +275,7 @@ internal fun CompanionUi(
     if (projectsOpen && paired) {
         ProjectsScreen(
             projects = projects, selectedThreadId = selectedThreadId,
-            projectName = projectName, themeMode = themeMode,
+            projectName = selectedProjectName, themeMode = themeMode,
             usageLimits = usageLimits, limitsLoading = limitsLoading, limitsError = limitsError,
             onThemeMode = onThemeMode, onClose = { projectsOpen = false },
             onSelectThread = { projectsOpen = false; onSelectThread(it) },
@@ -305,7 +308,7 @@ internal fun CompanionUi(
                                     if (status.startsWith("Нет связи")) MaterialTheme.colorScheme.error
                                     else MaterialTheme.colorScheme.secondary, CircleShape))
                                 Spacer(Modifier.width(5.dp))
-                                Text("${projectName.ifBlank { "Без проекта" }} · $status",
+                                Text("${selectedProjectName.ifBlank { "Без проекта" }} · $status",
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     style = MaterialTheme.typography.labelSmall,
                                     maxLines = 1, overflow = TextOverflow.Ellipsis)

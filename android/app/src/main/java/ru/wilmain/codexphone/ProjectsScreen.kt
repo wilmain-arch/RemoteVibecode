@@ -83,42 +83,6 @@ internal fun ProjectsScreen(
                     .semantics { contentDescription = "Новый чат" }) { UiGlyph(UiIcon.Plus, size = 23.dp) }
             }
         },
-        bottomBar = {
-            Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background)
-                .padding(horizontal = 18.dp, vertical = 8.dp)) {
-                Text("ТЕМА", style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(7.dp))
-                Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant,
-                    RoundedCornerShape(16.dp)).padding(4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    listOf("system" to "Система", "light" to "Светлая", "dark" to "Тёмная").forEach { (mode, label) ->
-                        val isSelected = themeMode == mode
-                        Surface(
-                            modifier = Modifier.weight(1f).height(44.dp).semantics {
-                                selected = isSelected
-                                contentDescription = "Тема: $label"
-                            }.clickable { onThemeMode(mode) },
-                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-                            shape = RoundedCornerShape(12.dp),
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Text(label, style = MaterialTheme.typography.labelMedium,
-                                    color = if (isSelected) MaterialTheme.colorScheme.onPrimary
-                                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal)
-                            }
-                        }
-                    }
-                }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    TextButton(onClick = onRefreshCatalog) { Text("Обновить список") }
-                    TextButton(onClick = onDevices) { Text("Устройства ADB") }
-                    TextButton(onClick = onDisconnect) { Text("Отключить") }
-                }
-            }
-        },
     ) { inner ->
         Column(Modifier.fillMaxSize().padding(inner)) {
             Surface(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp),
@@ -182,30 +146,13 @@ internal fun ProjectsScreen(
                     if (matches.isNotEmpty() || (!isStandalone &&
                             (search.isBlank() || group.name.contains(search, ignoreCase = true)))) {
                         val isCurrent = group.threads.any { it.id == selectedThreadId }
-                        val isExpanded = isStandalone || search.isNotBlank() || (expanded[group.id] ?: isCurrent)
+                        val isExpanded = isStandalone || search.isNotBlank() || (expanded[group.id] ?: false)
                         item(key = "heading:${group.id}") {
                             if (isStandalone) {
                                 Text("ЧАТЫ", Modifier.padding(start = 21.dp, top = 23.dp, bottom = 9.dp),
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.SemiBold,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            } else if (isCurrent) {
-                                Row(Modifier.fillMaxWidth().clickable { expanded[group.id] = !isExpanded }
-                                    .padding(start = 21.dp, end = 18.dp, top = 22.dp, bottom = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically) {
-                                    Text("${group.name.uppercase()} · ${chatCount(matches.size)}",
-                                        modifier = Modifier.weight(1f),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    UiGlyph(if (isExpanded) UiIcon.ChevronDown else UiIcon.ChevronRight,
-                                        size = 18.dp, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    TextButton(onClick = { onNewChat(group.cwd) }, modifier = Modifier.size(48.dp)
-                                        .semantics { contentDescription = "Новый чат в ${group.name}" }) {
-                                        UiGlyph(UiIcon.Plus, size = 19.dp)
-                                    }
-                                }
                             } else {
                                 Row(Modifier.fillMaxWidth().clickable { expanded[group.id] = !isExpanded }
                                     .padding(horizontal = 22.dp, vertical = 11.dp),
@@ -221,6 +168,10 @@ internal fun ProjectsScreen(
                                     }
                                     UiGlyph(if (isExpanded) UiIcon.ChevronDown else UiIcon.ChevronRight,
                                         size = 18.dp, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    if (isCurrent) TextButton(onClick = { onNewChat(group.cwd) },
+                                        modifier = Modifier.size(48.dp).semantics {
+                                            contentDescription = "Новый чат в ${group.name}"
+                                        }) { UiGlyph(UiIcon.Plus, size = 19.dp) }
                                 }
                             }
                         }
@@ -255,6 +206,42 @@ internal fun ProjectsScreen(
                             }
                         }
                     }
+                }
+                item(key = "settings") {
+                Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background)
+                    .padding(horizontal = 18.dp, vertical = 8.dp)) {
+                    Text("ТЕМА", style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(7.dp))
+                    Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant,
+                        RoundedCornerShape(16.dp)).padding(4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        listOf("system" to "Система", "light" to "Светлая", "dark" to "Тёмная").forEach { (mode, label) ->
+                            val isSelected = themeMode == mode
+                            Surface(
+                                modifier = Modifier.weight(1f).height(44.dp).semantics {
+                                    selected = isSelected
+                                    contentDescription = "Тема: $label"
+                                }.clickable { onThemeMode(mode) },
+                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                                shape = RoundedCornerShape(12.dp),
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Text(label, style = MaterialTheme.typography.labelMedium,
+                                        color = if (isSelected) MaterialTheme.colorScheme.onPrimary
+                                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal)
+                                }
+                            }
+                        }
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        TextButton(onClick = onRefreshCatalog) { Text("Обновить список") }
+                        TextButton(onClick = onDevices) { Text("Устройства ADB") }
+                        TextButton(onClick = onDisconnect) { Text("Отключить") }
+                    }
+                }
                 }
             }
         }
