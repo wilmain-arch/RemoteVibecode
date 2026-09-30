@@ -1391,9 +1391,13 @@ def main(argv: list[str] | None = None) -> None:
             # The socket must be accepted before a TLS handshake can block.
             # ThreadingHTTPServer runs finish_request in a worker thread.
             request.settimeout(10)
-            with self.tls.wrap_socket(request, server_side=True) as secured:
-                secured.settimeout(None)
-                Handler(secured, client_address, self)
+            try:
+                with self.tls.wrap_socket(request, server_side=True) as secured:
+                    secured.settimeout(None)
+                    Handler(secured, client_address, self)
+            except (ssl.SSLError, TimeoutError, ConnectionResetError):
+                # A readiness probe or abandoned connection may not send TLS.
+                pass
 
     server = Server((args.bind, args.port), Handler)
     tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
