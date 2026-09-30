@@ -49,7 +49,10 @@ SAFE_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f\x7f]+')
 
 class CodexRpc:
     def __init__(self, on_event=None) -> None:
-        from bridge.codex_path import resolve_codex_executable
+        try:
+            from .codex_path import resolve_codex_executable
+        except ImportError:
+            from codex_path import resolve_codex_executable
         executable = resolve_codex_executable(os.environ.get("CODEX_EXECUTABLE"))
         if not executable:
             raise RuntimeError("Не найден исполняемый файл Codex Desktop или CLI")
@@ -327,18 +330,49 @@ class Bridge:
                 "updatedAt": int(time.time())}
 
     def projects(self) -> dict:
+        threads = self.list_threads(limit=500)
+        state_path = Path.home() / ".codex" / ".codex-global-state.json"
+        try:
+            desktop = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            desktop = {}
+        known = desktop.get("local-projects") or {}
+        if not isinstance(known, dict):
+            known = {}
+        order = desktop.get("project-order") or []
+        if not isinstance(order, list):
+            order = []
+        assignments = desktop.get("thread-project-assignments") or {}
+        if not isinstance(assignments, dict):
+            assignments = {}
+        projectless_ids = set(desktop.get("projectless-thread-ids") or [])
         groups: dict[str, dict] = {}
-        for thread in self.list_threads(limit=500):
-            cwd = thread.get("cwd") or ""
-            project_id = thread.get("projectId") or cwd or "other"
-            group = groups.setdefault(project_id, {
+        roots: dict[str, list[str]] = {}
+        for project_id in [*order, *known.keys()]:
+            if project_id in groups or not isinstance(known.get(project_id), dict):
+                continue
+            project = known[project_id]
+            project_roots = [path for path in project.get("rootPaths", []) if isinstance(path, str)]
+            roots[project_id] = project_roots
+            groups[project_id] = {
                 "id": project_id,
-                "name": Path(cwd).name if cwd else "Другие чаты",
-                "cwd": cwd or None,
+                "name": project.get("name") or (Path(project_roots[0]).name if project_roots else project_id),
+                "cwd": project_roots[0] if project_roots else None,
                 "threads": [],
-            })
-            group["threads"].append(thread)
-        return {"projects": list(groups.values()), "selectedThreadId": self.selected_thread_id}
+            }
+        standalone = {"id": "other", "name": "Чаты", "cwd": None, "threads": []}
+        for thread in threads:
+            thread_id = thread["id"]
+            assignment = assignments.get(thread_id) or {}
+            project_id = thread.get("projectId") or assignment.get("projectId")
+            if thread_id in projectless_ids:
+                project_id = None
+            if project_id not in groups and thread_id not in projectless_ids:
+                cwd = thread.get("cwd")
+                project_id = next((id for id, paths in roots.items() if cwd in paths), None)
+            (groups[project_id] if project_id in groups else standalone)["threads"].append(thread)
+        return {"projects": [*groups.values(), standalone],
+                "selectedThreadId": self.selected_thread_id}
 
     def models(self) -> dict:
         with self.rpc_session() as rpc:

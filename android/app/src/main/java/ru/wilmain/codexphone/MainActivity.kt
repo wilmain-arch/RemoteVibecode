@@ -623,7 +623,7 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
                 ThreadItem(id, item.optString("title", "Новый чат"), item.optString("status"),
                     item.optLong("updatedAt").let { if (it in 1..999_999_999_999L) it * 1000 else it })
             }
-            if (threads.isNotEmpty()) projects.add(ProjectGroup(group.optString("id"), group.optString("name"),
+            if (threads.isNotEmpty() || group.optString("id") != "other") projects.add(ProjectGroup(group.optString("id"), group.optString("name"),
                 if (group.isNull("cwd")) null else group.optString("cwd").ifBlank { null }, threads))
         }
         val modelArray = modelData.optJSONArray("models") ?: JSONArray()

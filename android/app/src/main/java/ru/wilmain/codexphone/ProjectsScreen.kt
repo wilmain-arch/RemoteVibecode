@@ -62,11 +62,6 @@ internal fun ProjectsScreen(
     BackHandler(onBack = onClose)
     var search by remember { mutableStateOf("") }
     val expanded = remember { mutableStateMapOf<String, Boolean>() }
-    val orderedProjects = remember(projects, selectedThreadId) {
-        projects.sortedWith(compareByDescending<ProjectGroup> { group ->
-            group.threads.any { it.id == selectedThreadId }
-        }.thenBy { it.name.lowercase() })
-    }
     fun threadTime(value: Long): String = if (value <= 0) "" else
         DateUtils.getRelativeTimeSpanString(value, System.currentTimeMillis(), DateUtils.DAY_IN_MILLIS,
             DateUtils.FORMAT_ABBREV_RELATIVE).toString()
@@ -179,25 +174,22 @@ internal fun ProjectsScreen(
                 }
             }
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 20.dp)) {
-                var otherLabelShown = false
-                orderedProjects.forEach { group ->
+                projects.forEach { group ->
+                    val isStandalone = group.id == "other"
                     val matches = group.threads.filter { search.isBlank() ||
                         group.name.contains(search, ignoreCase = true) ||
                         it.title.contains(search, ignoreCase = true) }
-                    if (matches.isNotEmpty()) {
+                    if (matches.isNotEmpty() || (!isStandalone &&
+                            (search.isBlank() || group.name.contains(search, ignoreCase = true)))) {
                         val isCurrent = group.threads.any { it.id == selectedThreadId }
-                        val isExpanded = search.isNotBlank() || (expanded[group.id] ?: isCurrent)
-                        if (!isCurrent && search.isBlank() && !otherLabelShown) {
-                            item(key = "other-projects") {
-                                Text("ДРУГИЕ ПРОЕКТЫ", Modifier.padding(start = 21.dp, top = 23.dp, bottom = 9.dp),
+                        val isExpanded = isStandalone || search.isNotBlank() || (expanded[group.id] ?: isCurrent)
+                        item(key = "heading:${group.id}") {
+                            if (isStandalone) {
+                                Text("ЧАТЫ", Modifier.padding(start = 21.dp, top = 23.dp, bottom = 9.dp),
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.SemiBold,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                            otherLabelShown = true
-                        }
-                        item(key = "heading:${group.id}") {
-                            if (isCurrent) {
+                            } else if (isCurrent) {
                                 Row(Modifier.fillMaxWidth().clickable { expanded[group.id] = !isExpanded }
                                     .padding(start = 21.dp, end = 18.dp, top = 22.dp, bottom = 6.dp),
                                     verticalAlignment = Alignment.CenterVertically) {
