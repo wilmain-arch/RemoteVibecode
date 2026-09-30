@@ -26,8 +26,9 @@ jobs:
         run: python -m pip install -r agent/requirements-build.txt
       - name: Build executable
         run: >-
-          python -m PyInstaller --onefile --console --clean --noconfirm
+          python -m PyInstaller --onefile --windowed --clean --noconfirm
           --paths . --hidden-import qrcode.image.pil
+          --icon agent/remotevibecode.ico
           --name RemoteVibecodeAgent agent/windows_agent.py
       - name: Upload executable
         uses: actions/upload-artifact@v4

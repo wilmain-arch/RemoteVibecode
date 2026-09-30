@@ -183,8 +183,8 @@ def tunnel(config: dict, connection_id: str) -> None:
             remote.close()
 
 
-def relay_loop(config: dict) -> None:
-    while True:
+def relay_loop(config: dict, status=None, stop=None) -> None:
+    while stop is None or not stop.is_set():
         control = None
         stop_ping = threading.Event()
         try:
@@ -197,6 +197,8 @@ def relay_loop(config: dict) -> None:
             if read_json(control).get("ready") is not True:
                 raise ConnectionError("Сервер отклонил агента")
             print("Соединение с сервером установлено", flush=True)
+            if status:
+                status("relay", True)
 
             def ping() -> None:
                 while not stop_ping.wait(20):
@@ -214,11 +216,18 @@ def relay_loop(config: dict) -> None:
                     threading.Thread(target=tunnel, args=(config, connection_id), daemon=True).start()
         except (OSError, ValueError, ConnectionError, json.JSONDecodeError) as error:
             print(f"Нет связи с сервером: {error}; повтор через 5 секунд", flush=True)
+            if status:
+                status("relay", False, str(error))
         finally:
+            if status:
+                status("relay", False)
             stop_ping.set()
             if control is not None:
                 control.close()
-        time.sleep(5)
+        if stop is not None:
+            stop.wait(5)
+        else:
+            time.sleep(5)
 
 
 def wait_for_bridge(port: int, thread: threading.Thread) -> None:
@@ -233,20 +242,25 @@ def wait_for_bridge(port: int, thread: threading.Thread) -> None:
     raise RuntimeError("Локальный мост не открыл порт")
 
 
-def show_pairing(config: dict, fingerprint: str, pin: str, directory: Path) -> None:
+def pairing_image(config: dict, fingerprint: str, pin: str, directory: Path) -> Path:
+    address = f'https://{config["relayHost"]}:{config["publicPort"]}'
+    uri = "codexphone://pair?" + urlencode({"host": address, "pin": pin, "fingerprint": fingerprint})
+    image_path = directory / f"pairing-{pin}.png"
+    qrcode.make(uri).save(image_path)
+    return image_path
+
+
+def show_pairing(config: dict, fingerprint: str, pin: str, directory: Path, open_image=True) -> Path | None:
     state_path = directory / "state.json"
     try:
         if json.loads(state_path.read_text(encoding="utf-8")).get("paired"):
             print("Телефон уже привязан", flush=True)
-            return
+            return None
     except (OSError, ValueError):
         pass
-    address = f'https://{config["relayHost"]}:{config["publicPort"]}'
-    uri = "codexphone://pair?" + urlencode({"host": address, "pin": pin, "fingerprint": fingerprint})
-    image_path = directory / "pairing.png"
-    qrcode.make(uri).save(image_path)
+    image_path = pairing_image(config, fingerprint, pin, directory)
     print(f"QR-код привязки: {image_path} (действует 30 минут)", flush=True)
-    if sys.platform == "win32":
+    if open_image and sys.platform == "win32":
         try:
             os.startfile(image_path)
         except OSError:
@@ -263,6 +277,34 @@ def show_pairing(config: dict, fingerprint: str, pin: str, directory: Path) -> N
         image_path.unlink(missing_ok=True)
 
     threading.Thread(target=remove_when_used, daemon=True).start()
+    return image_path
+
+
+def run_agent(config_path: Path, status=None, open_pairing=True, stop=None) -> None:
+    config = load_config(config_path)
+    directory = config_path.parent
+    directory.mkdir(parents=True, exist_ok=True)
+    cert, key, bridge_fingerprint = ensure_certificate(directory)
+    pin = f"{secrets.randbelow(100_000_000):08d}"
+    codex_executable = config.get("codexExecutable") or shutil.which("codex")
+    if not codex_executable:
+        raise RuntimeError("Codex CLI не найден. Установите Codex на ПК и укажите путь в настройках")
+    os.environ["CODEX_EXECUTABLE"] = codex_executable
+    bridge_args = ["--thread", "draft-default", "--bind", "127.0.0.1",
+                   "--port", str(config["bridgePort"]), "--pin", pin,
+                   "--cert", str(cert), "--key", str(key),
+                   "--inbox", str(directory / "inbox"),
+                   "--outbox", str(directory / "outbox"),
+                   "--state", str(directory / "state.json")]
+    bridge_thread = threading.Thread(target=bridge_server.main, args=(bridge_args,), daemon=True)
+    bridge_thread.start()
+    wait_for_bridge(config["bridgePort"], bridge_thread)
+    if status:
+        status("bridge", True)
+    pairing_path = show_pairing(config, bridge_fingerprint, pin, directory, open_pairing)
+    if status:
+        status("pairing", str(pairing_path) if pairing_path else "")
+    relay_loop(config, status, stop)
 
 
 def set_autostart(enabled: bool) -> None:
@@ -288,33 +330,19 @@ def main() -> None:
     parser.add_argument("--setup", action="store_true")
     parser.add_argument("--install-autostart", action="store_true")
     parser.add_argument("--remove-autostart", action="store_true")
+    parser.add_argument("--cli", action="store_true", help="Запустить без графического интерфейса")
     args = parser.parse_args()
+    if not args.cli and not (args.setup or args.install_autostart or args.remove_autostart):
+        from agent.gui import launch
+        launch(args.config)
+        return
     if args.setup or not args.config.is_file():
         setup(args.config)
     if args.install_autostart or args.remove_autostart:
         set_autostart(args.install_autostart)
         print("Автозапуск " + ("включён" if args.install_autostart else "выключен"))
         return
-    config = load_config(args.config)
-    directory = args.config.parent
-    directory.mkdir(parents=True, exist_ok=True)
-    cert, key, bridge_fingerprint = ensure_certificate(directory)
-    pin = f"{secrets.randbelow(100_000_000):08d}"
-    codex_executable = config.get("codexExecutable") or shutil.which("codex")
-    if not codex_executable:
-        raise RuntimeError("Codex CLI не найден. Установите Codex на ПК и укажите codexExecutable в agent.json")
-    os.environ["CODEX_EXECUTABLE"] = codex_executable
-    bridge_args = ["--thread", "draft-default", "--bind", "127.0.0.1",
-                   "--port", str(config["bridgePort"]), "--pin", pin,
-                   "--cert", str(cert), "--key", str(key),
-                   "--inbox", str(directory / "inbox"),
-                   "--outbox", str(directory / "outbox"),
-                   "--state", str(directory / "state.json")]
-    bridge_thread = threading.Thread(target=bridge_server.main, args=(bridge_args,), daemon=True)
-    bridge_thread.start()
-    wait_for_bridge(config["bridgePort"], bridge_thread)
-    show_pairing(config, bridge_fingerprint, pin, directory)
-    relay_loop(config)
+    run_agent(args.config)
 
 
 if __name__ == "__main__":

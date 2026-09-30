@@ -17,7 +17,7 @@ Download `RemoteVibecodeAgent.exe` from the matching preview release or build
 it using the GitHub Actions workflow `Windows agent EXE`. The EXE bundles
 Python and all application dependencies; Python is not required on the PC.
 
-On first launch the console asks for the relay's public DNS name or IPv4
+On first launch the desktop window asks for the relay's public DNS name or IPv4
 address, the relay TLS certificate SHA-256 fingerprint and its secret. Obtain
 the latter two **on the owner's server**:
 
@@ -27,17 +27,20 @@ openssl x509 -in /etc/remotevibecode/relay-cert -noout -fingerprint -sha256
 ```
 
 The agent writes `%LOCALAPPDATA%\RemoteVibecode\agent.json`, creates a unique
-local bridge TLS certificate, opens a QR image and starts the bridge. Scan the
+local bridge TLS certificate, displays a QR code in its window and starts the bridge. Scan the
 QR in Android. The QR expires after 30 minutes and is deleted after pairing or
 expiry. The server secret is stored only in the Windows user's AppData and must
 not be shared. The bridge listens only on `127.0.0.1`.
 
-To change server settings, run `RemoteVibecodeAgent.exe --setup`. To start with
+To change server settings, open **Настройки** in the app. `--setup --cli` is
+available for console setup. To start with
 Windows sign-in, run `RemoteVibecodeAgent.exe --install-autostart`; to undo it,
 use `--remove-autostart`. The user can inspect or delete their local data in
 `%LOCALAPPDATA%\RemoteVibecode`.
 
-This preview is a console application. It supports one PC per relay server and
-one paired phone per PC bridge. A graphical setup and device-management screen
-is planned separately. The server and Windows executable have not yet been
+The GUI has Overview, Devices, Connection and Settings screens. It shows real
+bridge/relay/pairing state; the bridge does not currently collect a phone model
+or name, so the device is shown generically. The legacy console mode is
+available with `--cli`. This preview supports one PC per relay server and
+one paired phone per PC bridge. The server and Windows executable have not yet been
 validated together on a real Windows installation.

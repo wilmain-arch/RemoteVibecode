@@ -983,7 +983,7 @@ def main(argv: list[str] | None = None) -> None:
         parser.error("--pin должен состоять из 8 цифр")
     bridge = Bridge(args.thread, args.inbox, args.outbox, bridge_pin, args.state)
     adb_devices = AdbDevices(args.state.with_name("adb-devices.json"), os.environ.get("CODEX_ADB_RELAY", ""))
-    pairing_started = time.monotonic()
+    pairing_started = [time.monotonic()]
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "CodexPhoneBridge/0.1"
@@ -1015,6 +1015,22 @@ def main(argv: list[str] | None = None) -> None:
 
         def do_POST(self):
             route = urlparse(self.path).path
+            if route == "/api/pairing/rotate":
+                if self.client_address[0] not in ("127.0.0.1", "::1") or not hmac.compare_digest(
+                    self.headers.get("Authorization", ""), "Bearer " + bridge.token
+                ):
+                    self.send_json(403, {"error": "Только локальный агент может обновить код"})
+                    return
+                with bridge.pin_lock:
+                    if bridge.paired:
+                        self.send_json(409, {"error": "Телефон уже привязан"})
+                        return
+                    bridge.pin = f"{secrets.randbelow(100_000_000):08d}"
+                    bridge.pin_uses = 0
+                    pairing_started[0] = time.monotonic()
+                    new_pin = bridge.pin
+                self.send_json(200, {"pin": new_pin})
+                return
             if route == "/api/pair":
                 try:
                     client_ip = ipaddress.ip_address(self.client_address[0])
@@ -1029,7 +1045,7 @@ def main(argv: list[str] | None = None) -> None:
                         self.send_json(409, {"error": "Код сопряжения уже использован; перезапусти мост для нового телефона"})
                         return
                     bridge.pin_uses += 1
-                    if bridge.pin_uses > 10 or time.monotonic() - pairing_started > 1800:
+                    if bridge.pin_uses > 10 or time.monotonic() - pairing_started[0] > 1800:
                         self.send_json(429, {"error": "Лимит попыток сопряжения исчерпан"})
                         return
                 try:
