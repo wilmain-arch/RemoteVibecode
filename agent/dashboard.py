@@ -24,6 +24,48 @@ BLUE = "#536dff"
 CYAN = "#00d3e9"
 
 
+def _shell(draw: ImageDraw.ImageDraw, page: str) -> None:
+    draw.rounded_rectangle((22, 29, 319, 914), radius=23, fill=SIDE, outline=EDGE)
+    x, y = 45, 67
+    draw.line([(x + 8, y + 29), (x + 24, y + 40), (x + 8, y + 51)], fill=WHITE, width=7, joint="curve")
+    draw.line((x + 30, y + 53, x + 48, y + 53), fill=WHITE, width=6)
+    for distance, shade in ((12, "#783dff"), (20, "#3d73ff"), (28, CYAN)):
+        draw.arc((x + 13, y + 40 - distance, x + 13 + 2 * distance, y + 40 + distance),
+                 306, 53, fill=shade, width=6)
+    draw.text((138, 94), "RemoteVibecode", font=_font(18, True), fill=WHITE)
+    for index, (name, symbol) in enumerate((("Обзор", "home"), ("Устройства", "phone"),
+                                             ("Подключение", "link"), ("Настройки", "gear"))):
+        top = 183 + index * 72
+        selected = name == page
+        if selected:
+            draw.rounded_rectangle((32, top, 308, top + 62), radius=15,
+                                   fill="#17264a", outline="#1b315c")
+            draw.rounded_rectangle((32, top, 37, top + 62), radius=2, fill=BLUE)
+        icon_x, icon_y = 57, 199 + index * 72
+        color = "#81adff" if selected else "#9cb2e4"
+        if symbol == "home":
+            draw.line([(icon_x, icon_y + 12), (icon_x + 14, icon_y), (icon_x + 28, icon_y + 12)],
+                      fill=color, width=3, joint="curve")
+            draw.line([(icon_x + 4, icon_y + 10), (icon_x + 4, icon_y + 29),
+                       (icon_x + 24, icon_y + 29), (icon_x + 24, icon_y + 10)], fill=color, width=3)
+            draw.rectangle((icon_x + 11, icon_y + 19, icon_x + 17, icon_y + 29), outline=color, width=2)
+        elif symbol == "phone":
+            draw.rounded_rectangle((icon_x + 5, icon_y, icon_x + 24, icon_y + 31),
+                                   radius=3, outline=color, width=3)
+            draw.line((icon_x + 11, icon_y + 26, icon_x + 18, icon_y + 26), fill=color, width=2)
+        elif symbol == "link":
+            draw.arc((icon_x, icon_y + 8, icon_x + 20, icon_y + 28), 45, 310, fill=color, width=3)
+            draw.arc((icon_x + 10, icon_y, icon_x + 30, icon_y + 20), 225, 130, fill=color, width=3)
+            draw.line((icon_x + 11, icon_y + 19, icon_x + 20, icon_y + 10), fill=color, width=3)
+        else:
+            draw.ellipse((icon_x + 3, icon_y + 3, icon_x + 27, icon_y + 27), outline=color, width=3)
+            draw.ellipse((icon_x + 11, icon_y + 11, icon_x + 19, icon_y + 19), outline=color, width=3)
+            for dx, dy in ((15, 0), (15, 30), (0, 15), (30, 15)):
+                draw.ellipse((icon_x + dx - 2, icon_y + dy - 2,
+                              icon_x + dx + 2, icon_y + dy + 2), fill=color)
+        draw.text((117, icon_y + 3), name, font=_font(20, selected), fill=WHITE if selected else MUTED)
+
+
 @lru_cache(maxsize=40)
 def _font(size: int, bold: bool = False, mono: bool = False) -> ImageFont.FreeTypeFont:
     if sys.platform == "win32":
@@ -117,16 +159,7 @@ def render_dashboard(*, icon_path: Path, qr_path: Path | None, configured: bool,
         image.paste(gradient, (x1, y1), mask)
 
     # The coordinate system follows the supplied 1672 × 941 reference.
-    panel((22, 29, 319, 914), 23, SIDE)
-    logo(45, 67, 80)
-    txt((138, 94), "RemoteVibecode", 18, WHITE, True)
-    panel((32, 183, 308, 245), 15, "#17264a", "#1b315c")
-    draw.rounded_rectangle((32, 183, 37, 245), radius=2, fill=BLUE)
-    for i, (name, kind) in enumerate((("Обзор", "home"), ("Устройства", "phone"),
-                                       ("Подключение", "link"), ("Настройки", "gear"))):
-        y = 199 + i * 72
-        symbol(kind, 57, y, "#81adff" if i == 0 else "#9cb2e4")
-        txt((117, y + 3), name, 20, WHITE if i == 0 else MUTED, i == 0)
+    _shell(draw, "Обзор")
 
     ready = configured and bridge_ready and relay_ready
     txt((375, 52), "Ваш компьютер готов" if ready else
@@ -209,4 +242,90 @@ def render_dashboard(*, icon_path: Path, qr_path: Path | None, configured: bool,
         txt((659, 490), error[:43], 13, "#ffc0bf")
     elif status:
         txt((650, 486), status[:50], 13, DIM)
+    return image
+
+
+def render_page(*, page: str, configured: bool, paired: bool, relay_ready: bool,
+                address: str, error: str = "", status: str = "") -> Image.Image:
+    """Render the other agent pages in the overview's coordinate system and palette."""
+    image = Image.new("RGB", (WIDTH, HEIGHT), BG)
+    glow = Image.new("RGBA", (WIDTH, HEIGHT))
+    ImageDraw.Draw(glow).ellipse((550, -500, 1550, 500), fill=(23, 41, 84, 35))
+    image.paste(glow.filter(ImageFilter.GaussianBlur(140)), (0, 0),
+                glow.filter(ImageFilter.GaussianBlur(140)))
+    draw = ImageDraw.Draw(image)
+    _shell(draw, page)
+
+    def panel(box, radius=22, fill=CARD):
+        draw.rounded_rectangle(box, radius=radius, fill=fill, outline=EDGE, width=1)
+
+    def txt(x, y, value, size=20, color=WHITE, bold=False, mono=False):
+        draw.text((x, y), value, font=_font(size, bold, mono), fill=color)
+
+    def action(box, label, primary=False):
+        panel(box, 17, BLUE if primary else INNER)
+        txt(box[0] + 25, box[1] + 11, label, 18, WHITE, primary)
+
+    subtitles = {
+        "Устройства": "Управляйте привязкой телефона",
+        "Подключение": "Ваш сервер и состояние канала",
+        "Настройки": "Адрес сервера и локальный Codex",
+    }
+    txt(375, 52, page, 54, WHITE, True)
+    draw.ellipse((378, 133, 394, 149), fill=GREEN if relay_ready else DIM)
+    txt(412, 125, subtitles[page], 23, GREEN if relay_ready else MUTED)
+
+    if page == "Устройства":
+        panel((347, 183, 1646, 542))
+        txt(381, 217, "Привязанные устройства", 27, WHITE, True)
+        panel((377, 280, 1619, 427), 21, INNER)
+        panel((403, 309, 492, 399), 20, "#1c2b48")
+        draw.rounded_rectangle((433, 328, 463, 378), radius=5, outline=WHITE, width=3)
+        txt(525, 307, "Привязанный телефон" if paired else "Телефон не привязан", 23, WHITE, True)
+        draw.ellipse((527, 358, 543, 374), fill=GREEN if paired else DIM)
+        txt(559, 351, "Привязка активна" if paired else "Ожидает привязки", 18, MUTED)
+        action((1368, 320, 1591, 388), "Отключить" if paired else "Подключить")
+        txt(381, 466, "Для нового телефона откройте QR-код на вкладке «Обзор».", 18, MUTED)
+        panel((347, 560, 1646, 715))
+        txt(381, 594, "Как работает привязка", 24, WHITE, True)
+        txt(381, 638, "Отсканируйте код в приложении RemoteVibecode. Код действует 30 минут.", 18, MUTED)
+        if status or error:
+            txt(381, 748, (error or status)[:100], 18, "#ffc0bf" if error else GREEN)
+    elif page == "Подключение":
+        panel((347, 183, 1054, 526))
+        panel((1070, 183, 1646, 526))
+        txt(381, 218, "Адрес сервера", 25, WHITE, True)
+        panel((378, 280, 1022, 352), 15, INNER)
+        txt(405, 299, address if configured else "Сервер ещё не настроен", 22, WHITE, mono=configured)
+        action((378, 415, 606, 478), "Скопировать")
+        txt(1102, 218, "Состояние", 25, WHITE, True)
+        draw.ellipse((1104, 286, 1124, 306), fill=GREEN if relay_ready else DIM)
+        txt(1144, 277, "Сервер доступен" if relay_ready else "Нет связи с сервером", 21, WHITE, True)
+        txt(1102, 342, "Канал управления ПК → сервер", 17, MUTED)
+        txt(1102, 384, "Входящий порт на ПК не нужен", 17, MUTED)
+        panel((347, 542, 1646, 724))
+        txt(381, 575, "Маршрут подключения", 24, WHITE, True)
+        txt(381, 630, "Телефон   →   ваш сервер   →   агент на ПК   →   локальный Codex", 23, MUTED)
+        if error:
+            panel((347, 745, 1646, 830), 16, "#3b2032")
+            txt(376, 769, error[:95], 18, "#ffc0bf")
+        elif status:
+            txt(381, 754, status[:95], 18, GREEN)
+    else:
+        panel((347, 183, 1646, 872))
+        txt(381, 214, "Параметры подключения", 26, WHITE, True)
+        txt(381, 253, "Данные хранятся на этом компьютере.", 17, MUTED)
+        for index, (label, hint) in enumerate((
+            ("Адрес вашего сервера", "Домен или IPv4 без порта"),
+            ("SHA-256 отпечаток сертификата", "64 шестнадцатеричных символа"),
+            ("Секрет сервера", "Из /etc/remotevibecode/relay-secret"),
+            ("Исполняемый файл Codex", "Пусто — Codex Desktop, затем CLI"),
+        )):
+            y = 308 + index * 114
+            txt(381, y, label, 18, WHITE, True)
+            panel((378, y + 33, 1618, y + 83), 11, "#0c1525")
+            txt(382, y + 87, hint, 14, DIM)
+        action((378, 778, 624, 837), "Сохранить", True)
+        if error or status:
+            txt(650, 793, (error or status)[:74], 16, "#ffc0bf" if error else GREEN)
     return image
