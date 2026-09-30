@@ -31,7 +31,7 @@ provider's firewall. Port 8765 carries the phone's TLS connection to the PC;
 8766 and 8767 are the agent's authenticated TLS channels. To choose different
 ports, edit `/etc/default/remotevibecode-relay` and restart the service. A
 public IP address or DNS name must point to the server. No home-router port
-forwarding is needed: the future PC agent connects outward to this server.
+forwarding is needed: the PC agent connects outward to this server.
 
 The PC agent configuration will require the server address, the contents of
 `/etc/remotevibecode/relay-secret`, and the relay certificate's SHA-256
@@ -43,10 +43,9 @@ sudo cat /etc/remotevibecode/relay-secret
 openssl x509 -in /etc/remotevibecode/relay-cert -noout -fingerprint -sha256
 ```
 
-The agent is **not included in this package yet**. The current Android APK and
-PC bridge cannot use this relay until the separate PC agent and pairing-address
-integration are implemented. Installing the server package alone therefore
-does not provide remote access.
+The Windows PC agent is distributed separately as `RemoteVibecodeAgent.exe`.
+Installing the server package alone does not provide remote access. The
+end-to-end route has not yet been verified on a real Windows PC and public server.
 
 ## Operations
 
@@ -56,6 +55,6 @@ sudo journalctl -u remotevibecode-relay -f
 sudo systemctl restart remotevibecode-relay
 ```
 
-The relay does not expose the future local management dashboard. Keep its
+The relay does not expose a local management dashboard. Keep its
 credentials and administration on the server. Rotate the certificate and
 secret together with the agent configuration if either is compromised.
