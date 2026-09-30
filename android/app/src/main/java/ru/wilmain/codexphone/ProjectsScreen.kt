@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -44,10 +45,11 @@ import androidx.compose.ui.unit.dp
 
 @Composable
 internal fun ProjectsScreen(
-    projects: List<ProjectGroup>, selectedThreadId: String, projectName: String,
+    projects: List<ProjectGroup>, selectedThreadId: String,
     themeMode: String, onThemeMode: (String) -> Unit,
     usageLimits: UsageLimits?, limitsLoading: Boolean, limitsError: String,
     onClose: () -> Unit, onSelectThread: (String) -> Unit,
+    onDeleteThread: (String) -> Unit,
     onNewChat: (String?) -> Unit, onRefreshCatalog: () -> Unit,
     onRefreshLimits: () -> Unit,
     onDevices: () -> Unit,
@@ -61,7 +63,20 @@ internal fun ProjectsScreen(
     }
     BackHandler(onBack = onClose)
     var search by remember { mutableStateOf("") }
+    var deleteCandidate by remember { mutableStateOf<ThreadItem?>(null) }
     val expanded = remember { mutableStateMapOf<String, Boolean>() }
+    deleteCandidate?.let { thread ->
+        AlertDialog(
+            onDismissRequest = { deleteCandidate = null },
+            title = { Text("Удалить чат?") },
+            text = { Text("«${thread.title}» будет удалён из Codex Desktop. Это действие нельзя отменить.") },
+            confirmButton = { TextButton(onClick = {
+                deleteCandidate = null
+                onDeleteThread(thread.id)
+            }) { Text("Удалить", color = MaterialTheme.colorScheme.error) } },
+            dismissButton = { TextButton(onClick = { deleteCandidate = null }) { Text("Отмена") } },
+        )
+    }
     fun threadTime(value: Long): String = if (value <= 0) "" else
         DateUtils.getRelativeTimeSpanString(value, System.currentTimeMillis(), DateUtils.DAY_IN_MILLIS,
             DateUtils.FORMAT_ABBREV_RELATIVE).toString()
@@ -74,7 +89,7 @@ internal fun ProjectsScreen(
                     .semantics { contentDescription = "Назад к чату" }) { UiGlyph(UiIcon.Back, size = 22.dp) }
                 Column(Modifier.weight(1f).padding(start = 4.dp)) {
                     Text("Проекты", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Text("${projectName.ifBlank { "Без проекта" }} · текущий проект",
+                    Text("Проектов: ${projects.count { it.id != "other" }} · Чатов: ${projects.sumOf { it.threads.size }}",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -201,8 +216,11 @@ internal fun ProjectsScreen(
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
-                                UiGlyph(UiIcon.ChevronRight, size = 18.dp,
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                TextButton(onClick = { deleteCandidate = thread },
+                                    modifier = Modifier.size(48.dp).semantics {
+                                        contentDescription = "Удалить чат: ${thread.title}"
+                                    }) { UiGlyph(UiIcon.Trash, size = 18.dp,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                             }
                         }
                     }

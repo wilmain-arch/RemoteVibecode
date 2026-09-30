@@ -187,6 +187,7 @@ internal fun CompanionUi(
     onInput: (String) -> Unit,
     onScan: () -> Unit,
     onSelectThread: (String) -> Unit,
+    onDeleteThread: (String) -> Unit,
     onNewChat: (String?) -> Unit,
     onRefreshCatalog: () -> Unit,
     onRefreshLimits: () -> Unit,
@@ -275,10 +276,11 @@ internal fun CompanionUi(
     if (projectsOpen && paired) {
         ProjectsScreen(
             projects = projects, selectedThreadId = selectedThreadId,
-            projectName = selectedProjectName, themeMode = themeMode,
+            themeMode = themeMode,
             usageLimits = usageLimits, limitsLoading = limitsLoading, limitsError = limitsError,
             onThemeMode = onThemeMode, onClose = { projectsOpen = false },
             onSelectThread = { projectsOpen = false; onSelectThread(it) },
+            onDeleteThread = onDeleteThread,
             onNewChat = { projectsOpen = false; onNewChat(it) },
             onRefreshCatalog = onRefreshCatalog,
             onRefreshLimits = onRefreshLimits,

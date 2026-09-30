@@ -717,6 +717,39 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
         loadCatalog()
     }
 
+    suspend fun deleteThread(threadId: String) {
+        val result = withReachableHost { root ->
+            val body = JSONObject().put("threadId", threadId).toString()
+                .toRequestBody("application/json".toMediaType())
+            val request = Request.Builder().url("$root/api/threads/delete")
+                .header("Authorization", "Bearer $token").post(body).build()
+            withContext(Dispatchers.IO) {
+                client.newCall(request).execute().use { response ->
+                    val json = JSONObject(response.body?.string().orEmpty())
+                    if (!response.isSuccessful) error(json.optString("error", "Не удалось удалить чат"))
+                    json
+                }
+            }
+        }
+        prefs.edit().remove("draft:$threadId").apply()
+        val nextId = result.optString("selectedThreadId")
+        if (selectedThreadId == threadId && nextId.isNotBlank()) {
+            selectedThreadId = nextId
+            prefs.edit().putString("selectedThreadId", nextId).apply()
+            input = prefs.getString("draft:$nextId", "") ?: ""
+            selectedModel = ""
+            selectedEffort = ""
+            threadModel = ""
+            threadEffort = ""
+            lines = emptyList()
+            historyHasMore = false
+            olderPagesLoaded = false
+            historyError = ""
+            refresh()
+        }
+        loadCatalog()
+    }
+
     suspend fun acceptPair(uri: Uri) {
         status = "Подключаюсь…"
         val result = pairFromCode(uri)
@@ -957,6 +990,12 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
                 scope.launch {
                     runCatching { selectThread(id) }
                         .onFailure { status = "Не удалось открыть чат: ${it.message}" }
+                }
+            },
+            onDeleteThread = { id ->
+                scope.launch {
+                    runCatching { deleteThread(id) }
+                        .onFailure { status = "Не удалось удалить чат: ${it.message}" }
                 }
             },
             onNewChat = { cwd ->

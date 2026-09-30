@@ -63,11 +63,11 @@ jobs:
           name: remotevibecode-server-relay
           path: release
       - name: Include Android app
-        run: cp releases/RemoteVibecode-0.9.10.apk release/
+        run: cp releases/RemoteVibecode-0.9.11.apk release/
       - name: Include Arch agent
-        run: cp releases/remotevibecode-agent-0.1.7-1-any.pkg.tar.zst release/
+        run: cp releases/remotevibecode-agent-0.1.8-1-any.pkg.tar.zst release/
       - name: Generate checksums
-        run: cd release && sha256sum RemoteVibecodeAgent.exe remotevibecode-relay_0.1.0_all.deb remotevibecode-agent-0.1.7-1-any.pkg.tar.zst RemoteVibecode-0.9.10.apk > SHA256SUMS.txt
+        run: cd release && sha256sum RemoteVibecodeAgent.exe remotevibecode-relay_0.1.0_all.deb remotevibecode-agent-0.1.8-1-any.pkg.tar.zst RemoteVibecode-0.9.11.apk > SHA256SUMS.txt
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -75,8 +75,8 @@ jobs:
           gh release create "${{ github.ref_name }}"
           release/RemoteVibecodeAgent.exe
           release/remotevibecode-relay_0.1.0_all.deb
-          release/remotevibecode-agent-0.1.7-1-any.pkg.tar.zst
-          release/RemoteVibecode-0.9.10.apk
+          release/remotevibecode-agent-0.1.8-1-any.pkg.tar.zst
+          release/RemoteVibecode-0.9.11.apk
           release/SHA256SUMS.txt
           --repo "${{ github.repository }}"
           --title "RemoteVibecode ${{ github.ref_name }}"

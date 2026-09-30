@@ -397,6 +397,34 @@ class Bridge:
             self._save_state()
         return {"threadId": thread_id}
 
+    def delete_thread(self, thread_id: str) -> dict:
+        if not isinstance(thread_id, str) or not VALID_THREAD_ID.fullmatch(thread_id):
+            raise ValueError("Некорректный ID чата")
+        with self.queue_lock:
+            if thread_id in self.active_turns or any(
+                    item.get("threadId") == thread_id for item in self.queued_sends.values()):
+                raise RuntimeError("Дождитесь завершения задачи и сообщений в очереди")
+            if thread_id in self.draft_threads:
+                with self.state_lock:
+                    self.draft_threads.pop(thread_id, None)
+            else:
+                if not any(item["id"] == thread_id for item in self.list_threads(limit=500)):
+                    raise ValueError("Чат не найден")
+                with self.rpc_session() as rpc:
+                    rpc.call("thread/delete", {"threadId": thread_id})
+            remaining = self.list_threads(limit=500)
+            with self.state_lock:
+                if self.selected_thread_id == thread_id:
+                    if not remaining:
+                        draft_id = "draft-" + uuid.uuid4().hex
+                        self.draft_threads[draft_id] = str(Path.home())
+                        self.selected_thread_id = draft_id
+                    else:
+                        self.selected_thread_id = remaining[0]["id"]
+                self._save_state()
+                selected = self.selected_thread_id
+        return {"deleted": True, "selectedThreadId": selected}
+
     def create_thread(self, cwd: str | None = None) -> dict:
         if cwd:
             path = Path(cwd).resolve()
@@ -1252,6 +1280,15 @@ def main(argv: list[str] | None = None) -> None:
                     self.send_json(200, bridge.select_thread(data.get("threadId", "")))
                 except (RpcError, ValueError) as exc:
                     self.send_json(400, {"error": str(exc)})
+                return
+            if route == "/api/threads/delete":
+                try:
+                    data = self.read_json(4096)
+                    self.send_json(200, bridge.delete_thread(data.get("threadId")))
+                except ValueError as exc:
+                    self.send_json(400, {"error": str(exc)})
+                except (RpcError, RuntimeError) as exc:
+                    self.send_json(409, {"error": str(exc)})
                 return
             if route == "/api/threads":
                 try:

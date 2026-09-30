@@ -39,6 +39,7 @@ internal enum class UiIcon(@DrawableRes val drawable: Int) {
     Message(R.drawable.ui_message_square),
     List(R.drawable.ui_list),
     Copy(R.drawable.ui_copy),
+    Trash(R.drawable.ui_trash),
 }
 
 @Composable
