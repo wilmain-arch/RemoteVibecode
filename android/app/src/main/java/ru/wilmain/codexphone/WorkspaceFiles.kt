@@ -66,10 +66,12 @@ internal fun WorkspaceFilesScreen(
 ) {
     var transferTab by remember { mutableStateOf(false) }
     var search by remember(path) { mutableStateOf("") }
+    val linkedFile = path.startsWith("@chat-files/")
     val selectedFile = entries.firstOrNull { it.path == previewPath }
     fun back() {
         when {
             previewPath.isNotBlank() -> onPreview("")
+            linkedFile && !transferTab -> onBrowse("")
             path.isNotBlank() && !transferTab -> onBrowse(path.substringBeforeLast('/', ""))
             else -> onClose()
         }
@@ -78,10 +80,12 @@ internal fun WorkspaceFilesScreen(
     val title = when {
         previewPath.isNotBlank() -> previewPath.substringAfterLast('/')
         transferTab -> "Передача файлов"
+        linkedFile -> "Файл из чата"
         path.isNotBlank() -> path.substringAfterLast('/')
         else -> "Файлы проекта"
     }
     val subtitle = when {
+        linkedFile -> "Вне проекта · просмотр и скачивание"
         previewPath.isNotBlank() -> "${projectName.ifBlank { rootName }} / ${previewPath.substringBeforeLast('/', rootName)}" +
             (selectedFile?.let { " · ${fileSize(it.size)}" } ?: "")
         transferTab -> if (projectName.isBlank() || projectName == rootName)

@@ -195,6 +195,7 @@ class Bridge:
         self.cancelled_sends: dict[str, float] = saved.get("cancelled_sends", {})
         self.last_queue_error = saved.get("last_queue_error", "")
         self.queue_lock = threading.Lock()
+        self.chat_files: dict[tuple[str, str], Path] = {}
         self.chat_images: dict[str, Path] = {}
         self.chat_images_lock = threading.Lock()
         self._save_state()
@@ -670,6 +671,13 @@ class Bridge:
 
     def workspace_path(self, thread_id: str | None, relative: str = "") -> tuple[Path, Path]:
         thread_id = self._thread_id(thread_id)
+        if relative.startswith("@chat-files/"):
+            with self.chat_images_lock:
+                linked = self.chat_files.get((thread_id, relative))
+            if (linked is None or linked.is_symlink() or not linked.is_file()
+                    or any(parent.is_symlink() for parent in linked.parents)):
+                raise ValueError("Файл из ссылки недоступен. Обновите чат")
+            return linked.parent, linked
         if thread_id in self.draft_threads:
             cwd = self.draft_threads[thread_id]
         else:
@@ -697,6 +705,19 @@ class Bridge:
         return root, path
 
     def workspace_list(self, thread_id: str | None, relative: str = "") -> dict:
+        if relative.startswith("@chat-files/"):
+            thread_id = self._thread_id(thread_id)
+            with self.chat_images_lock:
+                files = [(key, file) for (chat, key), file in self.chat_files.items()
+                         if chat == thread_id and key.rsplit("/", 1)[0] == relative]
+            entries = [{"name": file.name, "path": key, "isDirectory": False,
+                        "size": file.stat().st_size} for key, file in files
+                       if file.is_file() and not file.is_symlink()
+                       and not any(parent.is_symlink() for parent in file.parents)]
+            if not entries:
+                raise ValueError("Файл из ссылки недоступен. Обновите чат")
+            return {"rootName": "Файл из чата", "path": relative,
+                    "entries": entries, "truncated": False}
         root, directory = self.workspace_path(thread_id, relative)
         if not directory.is_dir():
             raise ValueError("Папка не найдена")
@@ -719,7 +740,12 @@ class Bridge:
     def workspace_resolve(self, thread_id: str | None, reference: str) -> dict:
         if not reference or len(reference) > 2048:
             raise ValueError("Некорректная ссылка на файл")
+        reference = reference.strip()
+        if reference.startswith("<") and reference.endswith(">"):
+            reference = reference[1:-1]
         reference = unquote(reference.split("#", 1)[0].split("?", 1)[0])
+        # Desktop file links may include a source line, e.g. /project/app.py:12.
+        reference = re.sub(r":\d+(?::\d+)?$", "", reference)
         if reference.startswith("file://"):
             reference = reference[7:]
         root, _ = self.workspace_path(thread_id)
@@ -728,7 +754,13 @@ class Bridge:
             try:
                 reference = str(candidate.relative_to(root))
             except ValueError as exc:
-                raise ValueError("Ссылка вне папки проекта") from exc
+                thread_id = self._thread_id(thread_id)
+                with self.chat_images_lock:
+                    key = next((key for (chat, key), file in self.chat_files.items()
+                                if chat == thread_id and file == candidate), None)
+                if key is None:
+                    raise ValueError("Файл вне проекта не найден среди ссылок текущего чата. Обновите чат") from exc
+                return {"path": key, "folder": key.rsplit("/", 1)[0], "isDirectory": False}
         if reference.startswith("./"):
             reference = reference[2:]
         _, path = self.workspace_path(thread_id, reference)
@@ -738,6 +770,26 @@ class Bridge:
         return {"path": relative, "folder": relative if path.is_dir()
                 else ("" if path.parent == root else str(path.parent.relative_to(root))),
                 "isDirectory": path.is_dir()}
+
+    def register_chat_files(self, thread_id: str, text: str) -> None:
+        # Grant access only to individual files explicitly linked in this chat.
+        for reference in re.findall(r"!?\[[^\]]*\]\(([^)]+)\)", text):
+            reference = reference.strip().removeprefix("<").removesuffix(">")
+            reference = unquote(reference.split("#", 1)[0].split("?", 1)[0])
+            reference = re.sub(r":\d+(?::\d+)?$", "", reference)
+            reference = reference.removeprefix("file://")
+            path = Path(reference)
+            if not path.is_absolute() or path.is_symlink() or not path.is_file():
+                continue
+            # Reject paths traversing symlinked directories as well.
+            if any(parent.is_symlink() for parent in path.parents):
+                continue
+            path = path.resolve()
+            file_id = hmac.new(self.token.encode(), (thread_id + str(path)).encode(),
+                               hashlib.sha256).hexdigest()
+            key = "@chat-files/" + file_id + "/" + path.name
+            with self.chat_images_lock:
+                self.chat_files[(thread_id, key)] = path
 
     def workspace_preview(self, thread_id: str | None, relative: str) -> dict:
         _, path = self.workspace_path(thread_id, relative)
@@ -901,6 +953,7 @@ class Bridge:
                     images = [image for part in content if isinstance(part, dict)
                               and part.get("type") == "localImage" and part.get("path")
                               if (image := self.register_chat_image(str(part["path"]))) is not None]
+                    self.register_chat_files(thread_id, text)
                     if "Переданные файлы (прочитай по этим путям):" in text:
                         attachments.extend(re.findall(r"(?m)^- ([^\n:]+): /[^\n]+$", text))
                         images.extend(image for path in re.findall(r"(?m)^- [^\n:]+: (/[^\n]+)$", text)
@@ -912,6 +965,7 @@ class Bridge:
                                       "time": started_at, "turnId": turn_id})
                 elif item_type == "agentMessage":
                     text = item.get("text", "")
+                    self.register_chat_files(thread_id, text)
                     if text:
                         images = [image for path in re.findall(r"!\[[^\]]*\]\((/[^)]+)\)", text)
                                   if (image := self.register_chat_image(path)) is not None]
