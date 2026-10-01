@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -125,6 +126,42 @@ internal fun ProjectsScreen(
                     .semantics { contentDescription = "Новый чат" }) { UiGlyph(UiIcon.Plus, size = 23.dp) }
             }
         },
+        bottomBar = {
+            Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background)
+                .navigationBarsPadding().padding(horizontal = 18.dp, vertical = 7.dp)) {
+                Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant,
+                    RoundedCornerShape(16.dp)).padding(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    listOf("system" to "Система", "light" to "Светлая", "dark" to "Тёмная").forEach { (mode, label) ->
+                        val isSelected = themeMode == mode
+                        Surface(
+                            modifier = Modifier.weight(1f).height(44.dp).semantics {
+                                selected = isSelected
+                                contentDescription = "Тема: $label"
+                            }.clickable { onThemeMode(mode) },
+                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                            shape = RoundedCornerShape(12.dp),
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(label, style = MaterialTheme.typography.labelMedium,
+                                    color = if (isSelected) MaterialTheme.colorScheme.onPrimary
+                                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal)
+                            }
+                        }
+                    }
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween) {
+                    TextButton(onClick = onRefreshCatalog, modifier = Modifier.size(48.dp)
+                        .semantics { contentDescription = "Обновить список" }) {
+                        UiGlyph(UiIcon.Refresh, size = 20.dp)
+                    }
+                    TextButton(onClick = onDevices) { Text("Устройства ADB") }
+                    TextButton(onClick = onDisconnect) { Text("Отключить") }
+                }
+            }
+        },
     ) { inner ->
         Column(Modifier.fillMaxSize().padding(inner)) {
             Surface(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp),
@@ -183,7 +220,7 @@ internal fun ProjectsScreen(
                         color = MaterialTheme.colorScheme.error)
                 }
             }
-            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 20.dp)) {
+            LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(bottom = 20.dp)) {
                 projects.forEach { group ->
                     val isStandalone = group.id == "other"
                     val matches = group.threads.filter { search.isBlank() ||
@@ -260,42 +297,6 @@ internal fun ProjectsScreen(
                             }
                         }
                     }
-                }
-                item(key = "settings") {
-                Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background)
-                    .padding(horizontal = 18.dp, vertical = 8.dp)) {
-                    Text("ТЕМА", style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.height(7.dp))
-                    Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant,
-                        RoundedCornerShape(16.dp)).padding(4.dp),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        listOf("system" to "Система", "light" to "Светлая", "dark" to "Тёмная").forEach { (mode, label) ->
-                            val isSelected = themeMode == mode
-                            Surface(
-                                modifier = Modifier.weight(1f).height(44.dp).semantics {
-                                    selected = isSelected
-                                    contentDescription = "Тема: $label"
-                                }.clickable { onThemeMode(mode) },
-                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-                                shape = RoundedCornerShape(12.dp),
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Text(label, style = MaterialTheme.typography.labelMedium,
-                                        color = if (isSelected) MaterialTheme.colorScheme.onPrimary
-                                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal)
-                                }
-                            }
-                        }
-                    }
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        TextButton(onClick = onRefreshCatalog) { Text("Обновить список") }
-                        TextButton(onClick = onDevices) { Text("Устройства ADB") }
-                        TextButton(onClick = onDisconnect) { Text("Отключить") }
-                    }
-                }
                 }
             }
         }
