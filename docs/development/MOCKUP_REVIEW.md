@@ -1,6 +1,6 @@
 # Оценка макета 0.4
 
-Макет: [интерактивный экран](mockup/index.html) (`?drawer`, `?models`, `?dark`). Снимки: [чат, светлый](mockup/chat.png), [чат, тёмный](mockup/dark.png), [навигация](mockup/drawer.png), [модели](mockup/models.png), [тёмная навигация](mockup/drawer-dark.png), [тёмные модели](mockup/models-dark.png).
+Макет: [интерактивный экран](../../mockup/index.html) (`?drawer`, `?models`, `?dark`). Снимки: [чат, светлый](../../mockup/chat.png), [чат, тёмный](../../mockup/dark.png), [навигация](../../mockup/drawer.png), [модели](../../mockup/models.png), [тёмная навигация](../../mockup/drawer-dark.png), [тёмные модели](../../mockup/models-dark.png).
 
 ## Критерии и результат
 
