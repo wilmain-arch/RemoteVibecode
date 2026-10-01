@@ -257,13 +257,10 @@ internal fun UpdatesScreen(updates: AppUpdates, onClose: () -> Unit) {
         permissionPending = false
     }
     BackHandler(onBack = onClose)
-    Scaffold(topBar = {
-        Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 12.dp),
-            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-            TextButton(onClick = onClose) { Text("Назад") }
-            Text("Обновления", style = MaterialTheme.typography.titleLarge)
-        }
-    }) { padding ->
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = { UiScreenHeader(title = "Обновления", onBack = onClose) },
+    ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState())
             .padding(22.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Text("RemoteVibecode ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.titleMedium)

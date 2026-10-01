@@ -59,6 +59,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -72,11 +73,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
@@ -85,6 +91,7 @@ import androidx.compose.ui.zIndex
 import android.net.Uri
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -168,6 +175,7 @@ internal fun CompanionUi(
     queue: List<LocalMessage>,
     selectedThreadId: String,
     projects: List<ProjectGroup>,
+    catalogLoading: Boolean, catalogError: String,
     models: List<ModelOption>,
     selectedModel: String,
     selectedEffort: String,
@@ -194,6 +202,8 @@ internal fun CompanionUi(
     historyHasMore: Boolean,
     historyLoading: Boolean,
     historyError: String,
+    initialHistoryLoading: Boolean, initialHistoryError: String,
+    onRetryHistory: () -> Unit,
     onInput: (String) -> Unit,
     onScan: () -> Unit,
     onSelectThread: (String) -> Unit,
@@ -233,6 +243,30 @@ internal fun CompanionUi(
     val imeHeight = WindowInsets.ime.getBottom(density)
     val listState = remember(selectedThreadId) { LazyListState() }
     var firstHistoryScroll by remember(selectedThreadId) { mutableStateOf(true) }
+    var followBottom by remember(selectedThreadId) { mutableStateOf(true) }
+    var scrollingToBottom by remember(selectedThreadId) { mutableStateOf(false) }
+    val historyScrollConnection = remember(listState) {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (source == NestedScrollSource.UserInput && available.y != 0f) {
+                    // Record user intent synchronously; snapshotFlow can conflate a
+                    // short gesture with its final idle state, or an interrupted auto-scroll.
+                    firstHistoryScroll = false
+                    followBottom = false
+                }
+                return Offset.Zero
+            }
+
+            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
+                if (source == NestedScrollSource.UserInput && (consumed.y != 0f || available.y != 0f)) {
+                    followBottom = !listState.canScrollForward
+                }
+                return Offset.Zero
+            }
+        }
+    }
+    val composerContentHeight = (LocalConfiguration.current.screenHeightDp.dp -
+        with(density) { imeHeight.toDp() } - 220.dp).coerceIn(72.dp, 220.dp)
     var modelSheet by remember { mutableStateOf(false) }
     var draftModel by remember { mutableStateOf("") }
     var draftEffort by remember { mutableStateOf("") }
@@ -255,23 +289,42 @@ internal fun CompanionUi(
     val selectedProjectName = projects.firstOrNull { group ->
         group.id != "other" && group.threads.any { it.id == selectedThreadId }
     }?.name.orEmpty()
-    LaunchedEffect(selectedThreadId, visibleLines.lastOrNull()?.id, visibleLines.lastOrNull()?.text, visibleQueue.size) {
-        val total = visibleLines.size + visibleQueue.size + if (historyHasMore || historyLoading || historyError.isNotBlank()) 1 else 0
-        if (total > 0) {
-            val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
-            if (firstHistoryScroll || (last != null && last >= total - 3) ||
-                (total <= 3 && listState.firstVisibleItemIndex == 0)) {
-                listState.animateScrollToItem(total - 1)
-                firstHistoryScroll = false
-            }
+    suspend fun scrollToEnd() {
+        val last = listState.layoutInfo.totalItemsCount - 1
+        if (last < 0) return
+        scrollingToBottom = true
+        try {
+            listState.scrollToItem(last)
+            listState.scroll { scrollBy(100_000f) }
+        } finally {
+            scrollingToBottom = false
         }
     }
+    LaunchedEffect(listState) {
+        var userScrolling = false
+        snapshotFlow { Triple(listState.isScrollInProgress, scrollingToBottom, listState.canScrollForward) }
+            .collect { (scrolling, automatic, canScrollForward) ->
+                if (scrolling && !automatic) userScrolling = true
+                if (userScrolling) {
+                    firstHistoryScroll = false
+                    followBottom = !canScrollForward
+                    if (!scrolling) userScrolling = false
+                }
+            }
+    }
     val viewportHeight = listState.layoutInfo.viewportEndOffset - listState.layoutInfo.viewportStartOffset
-    LaunchedEffect(selectedThreadId, imeHeight, viewportHeight) {
-        if (imeHeight > 0 && listState.layoutInfo.totalItemsCount > 0) {
-            withFrameNanos { }
-            listState.scrollToItem(listState.layoutInfo.totalItemsCount - 1)
-            listState.scroll { scrollBy(100_000f) }
+    LaunchedEffect(selectedThreadId, visibleLines.lastOrNull()?.id, visibleLines.lastOrNull()?.text,
+        visibleQueue.size, imeHeight, viewportHeight) {
+        // Stable item keys keep the first visible item and offset while reading history.
+        // Follow viewport/IME changes only if the user was following the end.
+        if (visibleLines.isNotEmpty() || visibleQueue.isNotEmpty()) {
+            if ((firstHistoryScroll || followBottom) && !listState.isScrollInProgress) {
+                // An interrupted initial scroll must never re-arm after the user scrolls away.
+                firstHistoryScroll = false
+                withFrameNanos { }
+                if (!followBottom || listState.isScrollInProgress) return@LaunchedEffect
+                scrollToEnd()
+            }
         }
     }
     val modelName = models.firstOrNull { it.id == selectedModel }?.name ?: selectedModel.ifBlank { "Модель чата" }
@@ -307,6 +360,7 @@ internal fun CompanionUi(
     if (projectsOpen && paired) {
         ProjectsScreen(
             projects = projects, selectedThreadId = selectedThreadId,
+            catalogLoading = catalogLoading, catalogError = catalogError,
             themeMode = themeMode,
             usageLimits = usageLimits, limitsLoading = limitsLoading, limitsError = limitsError,
             onThemeMode = onThemeMode, onClose = { projectsOpen = false },
@@ -381,7 +435,10 @@ internal fun CompanionUi(
             bottomBar = {
                 if (paired) Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background).imePadding().navigationBarsPadding()
                     .padding(horizontal = 14.dp, vertical = 8.dp)) {
-                    if (visibleQueue.isNotEmpty()) {
+                    if (visibleQueue.isNotEmpty() && imeHeight > 0) Text("В очереди · ${visibleQueue.size}",
+                        Modifier.padding(start = 8.dp, bottom = 4.dp), style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (visibleQueue.isNotEmpty() && imeHeight == 0) {
                         val next = visibleQueue.first()
                         Surface(shape = RoundedCornerShape(15.dp),
                             color = MaterialTheme.colorScheme.secondaryContainer,
@@ -404,11 +461,14 @@ internal fun CompanionUi(
                     Surface(shape = RoundedCornerShape(22.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant) {
                         Column(Modifier.padding(horizontal = 8.dp, vertical = 5.dp)) {
+                            Column(Modifier.heightIn(max = composerContentHeight)
+                                .verticalScroll(rememberScrollState())) {
                             BasicTextField(input, onInput,
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 10.dp),
+                                modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Сообщение для Codex" }
+                                    .padding(horizontal = 10.dp, vertical = if (imeHeight > 0) 6.dp else 10.dp),
                                 textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
                                 cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                                minLines = 1, maxLines = 5,
+                                minLines = 1, maxLines = if (imeHeight > 0 || attachments.isNotEmpty()) 3 else 5,
                                 decorationBox = { innerField ->
                                     Box {
                                         if (input.isEmpty()) Text("Сообщение для Codex",
@@ -430,6 +490,7 @@ internal fun CompanionUi(
                             }
                             if (transferringFileId.isNotBlank()) TextButton(onClick = onCancelTransfer) {
                                 Text("Отменить передачу")
+                            }
                             }
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(1.dp),
                                 verticalAlignment = Alignment.CenterVertically) {
@@ -469,7 +530,8 @@ internal fun CompanionUi(
             },
         ) { inner ->
             if (!paired) {
-                Column(Modifier.fillMaxSize().padding(inner).padding(24.dp),
+                Column(Modifier.fillMaxSize().padding(inner).consumeWindowInsets(inner)
+                    .verticalScroll(rememberScrollState()).padding(24.dp),
                     verticalArrangement = Arrangement.Center) {
                     Text(if (relayOnly) "RemoteVibecode" else "RemoteVibecode Classic", style = MaterialTheme.typography.headlineMedium,
                         fontWeight = FontWeight.SemiBold)
@@ -479,7 +541,7 @@ internal fun CompanionUi(
                         else "Один раз подключите телефон к вашему ПК. Затем чаты и файлы будут доступны сразу.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.height(24.dp))
-                    Button(onClick = onScan, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("Сканировать QR-код") }
+                    Button(onClick = onScan, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) { Text("Сканировать QR-код") }
                     Spacer(Modifier.height(14.dp))
                     Text(status, color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodySmall)
@@ -488,7 +550,7 @@ internal fun CompanionUi(
                 Box(Modifier.fillMaxSize().padding(inner).consumeWindowInsets(inner)) {
                 LazyColumn(
                     state = listState,
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxSize().nestedScroll(historyScrollConnection),
                     contentPadding = PaddingValues(start = 18.dp, end = 18.dp,
                         top = 12.dp, bottom = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -503,12 +565,25 @@ internal fun CompanionUi(
                             }
                         }
                     }
-                    if (visibleLines.isEmpty() && visibleQueue.isEmpty()) item {
+                    if (visibleLines.isEmpty() && visibleQueue.isEmpty()) item(key = "initial-history") {
                         Box(Modifier.fillMaxWidth().padding(top = 80.dp), contentAlignment = Alignment.Center) {
-                            Text("Напишите сообщение для Codex", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                when {
+                                    initialHistoryLoading -> {
+                                        CircularProgressIndicator(Modifier.size(28.dp))
+                                        Text("Загружаю историю…", Modifier.padding(top = 12.dp),
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    initialHistoryError.isNotBlank() -> {
+                                        Text(initialHistoryError, color = MaterialTheme.colorScheme.error)
+                                        TextButton(onClick = onRetryHistory) { Text("Повторить") }
+                                    }
+                                    else -> Text("Напишите сообщение для Codex", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
                         }
                     }
-                    itemsIndexed(visibleLines, key = { index, line -> line.id.ifBlank { "${line.turnId}:$index" } }) { _, line ->
+                    itemsIndexed(visibleLines, key = { index, line -> line.id.ifBlank { "${line.turnId}:$index" } }) { index, line ->
                         when (line.role) {
                             "user" -> Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
                                 Surface(shape = RoundedCornerShape(20.dp, 20.dp, 6.dp, 20.dp),
@@ -634,6 +709,12 @@ internal fun CompanionUi(
                                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
                             }
                             else -> Column {
+                                val previous = visibleLines.subList(0, index).lastOrNull {
+                                    it.role !in setOf("process", "system", "outcome")
+                                }
+                                val showHeader = previous == null || line.turnId.isBlank() ||
+                                    previous.turnId != line.turnId || previous.role == "user"
+                                if (showHeader) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Surface(shape = RoundedCornerShape(8.dp),
                                         color = MaterialTheme.colorScheme.surfaceVariant) {
@@ -651,6 +732,7 @@ internal fun CompanionUi(
                                     }
                                 }
                                 Spacer(Modifier.height(8.dp))
+                                }
                                 SelectionContainer {
                                     MarkdownContent(line.text, onProjectFile = { reference ->
                                         scope.launch {
@@ -679,8 +761,8 @@ internal fun CompanionUi(
                                 modifier = Modifier.fillMaxWidth(0.86f)) {
                                 Column(Modifier.padding(13.dp)) {
                                     Text(if (item.deliveredTurnId.isNotBlank())
-                                        (if (item.steered) "КОРРЕКТИРОВКА ОТПРАВЛЕНА" else "ОТПРАВЛЕНО")
-                                        else "В ОЧЕРЕДИ", style = MaterialTheme.typography.labelSmall,
+                                        (if (item.steered) "Корректировка отправлена" else "Отправлено")
+                                        else "В очереди", style = MaterialTheme.typography.labelSmall,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.onSecondaryContainer)
                                     Spacer(Modifier.height(5.dp))
@@ -713,7 +795,10 @@ internal fun CompanionUi(
                             .clickable {
                                 scope.launch {
                                     val last = listState.layoutInfo.totalItemsCount - 1
-                                    if (last >= 0) listState.animateScrollToItem(last)
+                                    if (last >= 0) {
+                                        followBottom = true
+                                        scrollToEnd()
+                                    }
                                 }
                             },
                         shape = CircleShape,
@@ -750,22 +835,28 @@ internal fun CompanionUi(
             }
         }
     }
-    if (modelSheet) ModalBottomSheet(onDismissRequest = { modelSheet = false }) {
+    if (modelSheet) ModalBottomSheet(onDismissRequest = { modelSheet = false },
+        containerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
         Column(Modifier.fillMaxWidth().navigationBarsPadding().verticalScroll(rememberScrollState())
             .padding(start = 18.dp, end = 18.dp, bottom = 36.dp)) {
             Text("Модель и усилие", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(14.dp))
-            Text("МОДЕЛЬ", style = MaterialTheme.typography.labelSmall,
+            Text("Модель", style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Row(Modifier.fillMaxWidth().semantics { selected = draftModel.isBlank() }
+            Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics { selected = draftModel.isBlank() }
                 .clickable { draftModel = ""; draftEffort = "" }
                 .padding(horizontal = 8.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("Как в чате", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
                 if (draftModel.isBlank()) UiGlyph(UiIcon.Check, size = 17.dp)
             }
-            LazyColumn(Modifier.height(108.dp)) {
-                items(models) { model ->
-                    Row(Modifier.fillMaxWidth().semantics { selected = model.id == draftModel }
+            if (models.isEmpty()) Text(if (catalogLoading) "Загружаю модели…" else "Модели недоступны",
+                Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (catalogError.isNotBlank()) {
+                Text(catalogError, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                TextButton(onClick = onRefreshCatalog, enabled = !catalogLoading) { Text("Повторить") }
+            }
+                models.forEach { model ->
+                    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics { selected = model.id == draftModel }
                         .clickable { draftModel = model.id; draftEffort = "" }
                         .padding(horizontal = 8.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(model.name, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium,
@@ -773,9 +864,8 @@ internal fun CompanionUi(
                         if (model.id == draftModel) UiGlyph(UiIcon.Check, size = 17.dp)
                     }
                 }
-            }
             Spacer(Modifier.height(12.dp))
-            Text("УСИЛИЕ", style = MaterialTheme.typography.labelSmall,
+            Text("Усилие", style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(8.dp))
             val effortOptions = models.firstOrNull { it.id == draftModel.ifBlank { selectedModel } }?.efforts ?: emptyList()
@@ -783,7 +873,7 @@ internal fun CompanionUi(
                 verticalArrangement = Arrangement.spacedBy(7.dp)) {
                 Surface(shape = RoundedCornerShape(18.dp),
                     color = if (draftEffort.isBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-                    modifier = Modifier.semantics { selected = draftEffort.isBlank() }
+                    modifier = Modifier.heightIn(min = 48.dp).semantics { selected = draftEffort.isBlank() }
                         .clickable { draftEffort = "" }) {
                     Text("Как в чате", modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
                         style = MaterialTheme.typography.labelMedium,
@@ -793,7 +883,7 @@ internal fun CompanionUi(
                     Surface(shape = RoundedCornerShape(18.dp),
                         color = if (effort == draftEffort) MaterialTheme.colorScheme.primary
                         else MaterialTheme.colorScheme.surfaceVariant,
-                        modifier = Modifier.semantics { selected = draftEffort == effort }
+                        modifier = Modifier.heightIn(min = 48.dp).semantics { selected = draftEffort == effort }
                             .clickable { draftEffort = effort }) {
                         Text(effortLabel(effort), modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
                             style = MaterialTheme.typography.labelMedium,

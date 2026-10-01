@@ -63,6 +63,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
+import androidx.compose.material3.Typography
+import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
@@ -183,33 +185,73 @@ private suspend fun pairFromCode(uri: Uri): PairResult {
 private val lightPalette = lightColorScheme(
     primary = Color(0xFF202321),
     onPrimary = Color.White,
+    primaryContainer = Color(0xFFDFE4DD),
+    onPrimaryContainer = Color(0xFF202321),
     secondary = Color(0xFF247661),
     onSecondary = Color.White,
     secondaryContainer = Color(0xFFE5F1EA),
     onSecondaryContainer = Color(0xFF17634F),
+    tertiary = Color(0xFF565D58),
+    onTertiary = Color.White,
+    tertiaryContainer = Color(0xFFE5E9E3),
+    onTertiaryContainer = Color(0xFF202321),
+    inverseSurface = Color(0xFF2A312B),
+    inverseOnSurface = Color(0xFFF2F4F1),
+    inversePrimary = Color(0xFFDFE4DD),
     background = Color(0xFFF8F9F7),
     onBackground = Color(0xFF202321),
     surface = Color(0xFFF8F9F7),
     onSurface = Color(0xFF202321),
     surfaceVariant = Color(0xFFEBEEEA),
-    onSurfaceVariant = Color(0xFF727774),
+    onSurfaceVariant = Color(0xFF565D58),
+    surfaceDim = Color(0xFFD9DED8),
+    surfaceBright = Color(0xFFF8F9F7),
+    surfaceContainerLowest = Color(0xFFFFFFFF),
+    surfaceContainerLow = Color(0xFFF2F4F0),
+    surfaceContainer = Color(0xFFEBEEEA),
+    surfaceContainerHigh = Color(0xFFE5E9E3),
+    surfaceContainerHighest = Color(0xFFDFE4DD),
+    surfaceTint = Color(0xFF202321),
+    outline = Color(0xFF6C746D),
     outlineVariant = Color(0xFFE4E7E3),
 )
 private val darkPalette = darkColorScheme(
     primary = Color(0xFFF2F4F1),
     onPrimary = Color(0xFF141715),
+    primaryContainer = Color(0xFF343B35),
+    onPrimaryContainer = Color(0xFFF2F4F1),
     secondary = Color(0xFF8CCDB4),
     onSecondary = Color(0xFF141715),
     secondaryContainer = Color(0xFF20382E),
     onSecondaryContainer = Color(0xFF8CCDB4),
+    tertiary = Color(0xFFA0A8A2),
+    onTertiary = Color(0xFF141715),
+    tertiaryContainer = Color(0xFF2A312B),
+    onTertiaryContainer = Color(0xFFF2F4F1),
+    inverseSurface = Color(0xFFEBEEEA),
+    inverseOnSurface = Color(0xFF202321),
+    inversePrimary = Color(0xFF202321),
     background = Color(0xFF141715),
     onBackground = Color(0xFFF2F4F1),
     surface = Color(0xFF141715),
     onSurface = Color(0xFFF2F4F1),
     surfaceVariant = Color(0xFF242925),
     onSurfaceVariant = Color(0xFFA0A8A2),
+    surfaceDim = Color(0xFF141715),
+    surfaceBright = Color(0xFF343B35),
+    surfaceContainerLowest = Color(0xFF0F1210),
+    surfaceContainerLow = Color(0xFF1A1F1B),
+    surfaceContainer = Color(0xFF202621),
+    surfaceContainerHigh = Color(0xFF2A312B),
+    surfaceContainerHighest = Color(0xFF343B35),
+    surfaceTint = Color(0xFFF2F4F1),
+    outline = Color(0xFF7A857D),
     outlineVariant = Color(0xFF303632),
 )
+private val appTypography = Typography().let { base ->
+    base.copy(labelSmall = base.labelSmall.copy(fontSize = 12.sp, lineHeight = 16.sp),
+        labelMedium = base.labelMedium.copy(fontSize = 13.sp, lineHeight = 18.sp))
+}
 
 class MainActivity : ComponentActivity() {
     private var pairingUri by mutableStateOf<Uri?>(null)
@@ -265,6 +307,8 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
     var selectedEffort by remember { mutableStateOf("") }
     val models = remember { mutableStateListOf<ModelOption>() }
     val projects = remember { mutableStateListOf<ProjectGroup>() }
+    var catalogLoading by remember { mutableStateOf(false) }
+    var catalogError by remember { mutableStateOf("") }
     var input by remember { mutableStateOf(prefs.getString("draft:${selectedThreadId}", "") ?: "") }
     var delivering by remember { mutableStateOf(false) }
     var localQueueError by remember { mutableStateOf("") }
@@ -273,6 +317,9 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
     var olderPagesLoaded by remember { mutableStateOf(false) }
     var loadingOlder by remember { mutableStateOf(false) }
     var historyError by remember { mutableStateOf("") }
+    var historyReady by remember { mutableStateOf(false) }
+    var initialHistoryLoading by remember { mutableStateOf(token.isNotBlank()) }
+    var initialHistoryError by remember { mutableStateOf("") }
     val files = remember { mutableStateListOf<PendingFile>().apply { addAll(readPendingFiles(prefs)) } }
     val pendingFileDeletes = remember { mutableStateListOf<String>().apply {
         addAll(prefs.getStringSet("pendingFileDeletes", emptySet()).orEmpty())
@@ -468,13 +515,18 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
         if (token.isBlank()) return
         val requestedThreadId = selectedThreadId
         val threadQuery = if (requestedThreadId.isBlank()) "" else "?threadId=${Uri.encode(requestedThreadId)}"
-        val pair = withReachableHost { root ->
-            withContext(Dispatchers.IO) {
-                requestJson(client, "$root/api/status$threadQuery", token) to
-                    requestJson(client, "$root/api/history$threadQuery", token)
-            }
+        if (!historyReady) {
+            initialHistoryLoading = true
+            initialHistoryError = ""
         }
-        val (state, history) = pair
+        try {
+            val pair = withReachableHost { root ->
+                withContext(Dispatchers.IO) {
+                    requestJson(client, "$root/api/status$threadQuery", token) to
+                        requestJson(client, "$root/api/history$threadQuery", token)
+                }
+            }
+            val (state, history) = pair
             withContext(Dispatchers.Main) {
                 if (requestedThreadId.isNotBlank() && requestedThreadId != selectedThreadId) return@withContext
                 if (selectedThreadId.isBlank()) {
@@ -503,6 +555,9 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
                     else -> "Подключено"
                 }
                 val latest = parseHistory(history)
+                historyReady = true
+                initialHistoryLoading = false
+                initialHistoryError = ""
                 val confirmed = latest.filter { it.role == "user" }
                 localQueue.removeAll { pending ->
                     pending.deliveredTurnId.isNotBlank() && confirmed.any { line ->
@@ -525,6 +580,15 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
                     if (!olderPagesLoaded) historyHasMore = history.optBoolean("hasMore")
                 }
             }
+        } catch (cancel: CancellationException) {
+            throw cancel
+        } catch (error: Exception) {
+            if (requestedThreadId == selectedThreadId && !historyReady) {
+                initialHistoryLoading = false
+                initialHistoryError = "Не удалось загрузить историю: ${error.message}"
+            }
+            throw error
+        }
     }
 
     suspend fun browseWorkspace(path: String) {
@@ -615,37 +679,48 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
     }
 
     suspend fun loadCatalog() {
-        if (token.isBlank()) return
-        val (projectData, modelData) = withReachableHost { root ->
-            withContext(Dispatchers.IO) {
-                requestJson(client, "$root/api/projects", token) to
-                    requestJson(client, "$root/api/models", token)
+        if (token.isBlank() || catalogLoading) return
+        catalogLoading = true
+        catalogError = ""
+        try {
+            val (projectData, modelData) = withReachableHost { root ->
+                withContext(Dispatchers.IO) {
+                    requestJson(client, "$root/api/projects", token) to
+                        requestJson(client, "$root/api/models", token)
+                }
             }
-        }
-        val projectArray = projectData.optJSONArray("projects") ?: JSONArray()
-        projects.clear()
-        val seenThreadIds = mutableSetOf<String>()
-        for (i in 0 until projectArray.length()) {
-            val group = projectArray.optJSONObject(i) ?: continue
-            val threadArray = group.optJSONArray("threads") ?: JSONArray()
-            val threads = (0 until threadArray.length()).mapNotNull { j ->
-                val item = threadArray.optJSONObject(j) ?: return@mapNotNull null
-                val id = item.optString("id")
-                if (id.isBlank() || !seenThreadIds.add(id)) return@mapNotNull null
-                ThreadItem(id, item.optString("title", "Новый чат"), item.optString("status"),
-                    item.optLong("updatedAt").let { if (it in 1..999_999_999_999L) it * 1000 else it })
+            val projectArray = projectData.optJSONArray("projects") ?: JSONArray()
+            projects.clear()
+            val seenThreadIds = mutableSetOf<String>()
+            for (i in 0 until projectArray.length()) {
+                val group = projectArray.optJSONObject(i) ?: continue
+                val threadArray = group.optJSONArray("threads") ?: JSONArray()
+                val threads = (0 until threadArray.length()).mapNotNull { j ->
+                    val item = threadArray.optJSONObject(j) ?: return@mapNotNull null
+                    val id = item.optString("id")
+                    if (id.isBlank() || !seenThreadIds.add(id)) return@mapNotNull null
+                    ThreadItem(id, item.optString("title", "Новый чат"), item.optString("status"),
+                        item.optLong("updatedAt").let { if (it in 1..999_999_999_999L) it * 1000 else it })
+                }
+                if (threads.isNotEmpty() || group.optString("id") != "other") projects.add(ProjectGroup(group.optString("id"), group.optString("name"),
+                    if (group.isNull("cwd")) null else group.optString("cwd").ifBlank { null }, threads))
             }
-            if (threads.isNotEmpty() || group.optString("id") != "other") projects.add(ProjectGroup(group.optString("id"), group.optString("name"),
-                if (group.isNull("cwd")) null else group.optString("cwd").ifBlank { null }, threads))
-        }
-        val modelArray = modelData.optJSONArray("models") ?: JSONArray()
-        models.clear()
-        for (i in 0 until modelArray.length()) {
-            val item = modelArray.optJSONObject(i) ?: continue
-            val efforts = item.optJSONArray("efforts") ?: JSONArray()
-            models.add(ModelOption(item.optString("id"), item.optString("name"),
-                (0 until efforts.length()).map { efforts.optString(it) },
-                if (item.isNull("defaultEffort")) "" else item.optString("defaultEffort")))
+            val modelArray = modelData.optJSONArray("models") ?: JSONArray()
+            models.clear()
+            for (i in 0 until modelArray.length()) {
+                val item = modelArray.optJSONObject(i) ?: continue
+                val efforts = item.optJSONArray("efforts") ?: JSONArray()
+                models.add(ModelOption(item.optString("id"), item.optString("name"),
+                    (0 until efforts.length()).map { efforts.optString(it) },
+                    if (item.isNull("defaultEffort")) "" else item.optString("defaultEffort")))
+            }
+        } catch (cancel: CancellationException) {
+            throw cancel
+        } catch (error: Exception) {
+            catalogError = "Не удалось обновить проекты и чаты: ${error.message}"
+            throw error
+        } finally {
+            catalogLoading = false
         }
     }
 
@@ -695,6 +770,9 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
         historyHasMore = false
         olderPagesLoaded = false
         historyError = ""
+        historyReady = false
+        initialHistoryLoading = token.isNotBlank()
+        initialHistoryError = ""
         refresh()
     }
 
@@ -725,6 +803,9 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
         historyHasMore = false
         olderPagesLoaded = false
         historyError = ""
+        historyReady = false
+        initialHistoryLoading = token.isNotBlank()
+        initialHistoryError = ""
         refresh()
         loadCatalog()
     }
@@ -757,6 +838,9 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
             historyHasMore = false
             olderPagesLoaded = false
             historyError = ""
+            historyReady = false
+            initialHistoryLoading = token.isNotBlank()
+            initialHistoryError = ""
             refresh()
         }
         loadCatalog()
@@ -796,6 +880,9 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
         historyHasMore = false
         olderPagesLoaded = false
         historyError = ""
+        historyReady = false
+        initialHistoryLoading = token.isNotBlank()
+        initialHistoryError = ""
         saveToken(context, prefs, token)
         prefs.edit().putString("host", host).putString("tailHost", tailHost)
             .putString("certificatePin", certificatePin).apply()
@@ -897,6 +984,10 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
             }.onSuccess {
                 token = ""
                 lines = emptyList()
+                historyReady = false
+                initialHistoryLoading = false
+                initialHistoryError = ""
+                catalogError = ""
                 projects.clear()
                 models.clear()
                 usageLimits = null
@@ -976,7 +1067,7 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
             }
         }
     }
-    MaterialTheme(colorScheme = if (darkTheme) darkPalette else lightPalette) {
+    MaterialTheme(colorScheme = if (darkTheme) darkPalette else lightPalette, typography = appTypography) {
         if (updatesOpen) UpdatesScreen(updates, onClose = { updatesOpen = false })
         else CompanionUi(
             onUpdates = { updatesOpen = true },
@@ -991,6 +1082,7 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
             status = status, usageLimits = usageLimits, limitsLoading = limitsLoading,
             limitsError = limitsError, lines = lines, queue = localQueue.toList(),
             selectedThreadId = selectedThreadId, projects = projects.toList(),
+            catalogLoading = catalogLoading, catalogError = catalogError,
             models = models.toList(), selectedModel = selectedModel.ifBlank { threadModel },
             selectedEffort = selectedEffort.ifBlank { threadEffort },
             modelOverridden = selectedModel.isNotBlank(), effortOverridden = selectedEffort.isNotBlank(),
@@ -1006,6 +1098,8 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
             transferringFileId = transferringFileId, transferProgress = transferProgress,
             historyHasMore = historyHasMore, historyLoading = loadingOlder,
             historyError = historyError,
+            initialHistoryLoading = initialHistoryLoading, initialHistoryError = initialHistoryError,
+            onRetryHistory = { scope.launch { runCatching { refresh() } } },
             onInput = {
                 input = it
                 prefs.edit().putString("draft:$selectedThreadId", it).apply()

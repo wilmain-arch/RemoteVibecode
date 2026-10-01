@@ -1,6 +1,6 @@
 # Maintainer: wilmain <https://github.com/wilmain-arch>
 pkgname=remotevibecode-agent
-pkgver=0.2.7
+pkgver=0.3.0
 pkgrel=1
 pkgdesc='Графический агент RemoteVibecode для подключения ПК к своему ретранслятору'
 arch=('any')
@@ -18,6 +18,7 @@ package() {
     install -Dm644 "$srcdir/remotevibecode-source/agent/update-public.pem" "$appdir/agent/update-public.pem"
     install -Dm644 "$srcdir/remotevibecode-source/agent/gui.py" "$appdir/agent/gui.py"
     install -Dm644 "$srcdir/remotevibecode-source/agent/dashboard.py" "$appdir/agent/dashboard.py"
+    install -Dm644 "$srcdir/remotevibecode-source/agent/ui_components.py" "$appdir/agent/ui_components.py"
     install -Dm644 "$srcdir/remotevibecode-source/agent/remotevibecode.ico" "$appdir/agent/remotevibecode.ico"
     install -Dm644 "$srcdir/remotevibecode-source/bridge/__init__.py" "$appdir/bridge/__init__.py"
     install -Dm644 "$srcdir/remotevibecode-source/bridge/codex_path.py" "$appdir/bridge/codex_path.py"

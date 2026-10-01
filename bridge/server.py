@@ -198,6 +198,8 @@ class Bridge:
         self.chat_files: dict[tuple[str, str], Path] = {}
         self.chat_images: dict[str, Path] = {}
         self.chat_images_lock = threading.Lock()
+        self.agent_labels = {}
+        self.agent_labels_lock = threading.Lock()
         self._save_state()
         self.stop_worker = threading.Event()
         self.worker = threading.Thread(target=self._deliver_queued, daemon=True)
@@ -1020,6 +1022,34 @@ class Bridge:
             "oldestQueuedSeconds": oldest_queued_seconds,
         }
 
+    def agent_activity_label(self, item: dict, fetch: bool = True) -> str:
+        agent_id = item.get("agentThreadId")
+        now = time.monotonic()
+        with self.agent_labels_lock:
+            cached = self.agent_labels.get(agent_id)
+        detail = cached[1] if cached else {}
+        if fetch and agent_id and (not cached or now - cached[0] > 300):
+            try:
+                with self.rpc_session() as rpc:
+                    detail = rpc.call("thread/read", {"threadId": agent_id,
+                                                       "includeTurns": False}).get("thread", {})
+            except (RpcError, RuntimeError, queue.Empty):
+                detail = {}
+            with self.agent_labels_lock:
+                if len(self.agent_labels) >= 500:
+                    self.agent_labels.clear()
+                self.agent_labels[agent_id] = (now, detail)
+        name = detail.get("agentNickname") or detail.get("name")
+        if not name:
+            name = str(item.get("agentPath") or "").rsplit("/", 1)[-1].replace("_", " ")
+        parts = [str(name or "Субагент")[:80]]
+        for key in ("agentRole", "model"):
+            if detail.get(key):
+                parts.append(str(detail[key])[:80])
+        prefix = {"completed": "Завершил работу", "spawned": "Создан"}.get(
+            item.get("kind"), "Субагент")
+        return "Субагент" if parts == ["Субагент"] and prefix == "Субагент" else prefix + " · " + " · ".join(parts)
+
     def history(self, thread_id: str | None = None, before: str | None = None,
                 limit: int = 60) -> dict:
         thread_id = self._thread_id(thread_id)
@@ -1031,6 +1061,14 @@ class Bridge:
                 "thread/read", {"threadId": thread_id, "includeTurns": True}
             )
         thread = result.get("thread", {})
+        recent_agents = set()
+        for recent_turn in reversed(thread.get("turns") or []):
+            for recent_item in reversed(recent_turn.get("items") or []):
+                if recent_item.get("type") == "subAgentActivity":
+                    if len(recent_agents) < 12:
+                        recent_agents.add(recent_item.get("agentThreadId"))
+            if len(recent_agents) >= 12:
+                break
         turns = []
         # Desktop-owned turns may be seen by polling before notifications arrive.
         # Only observe the latest running task, never invent baselines for old tasks.
@@ -1106,7 +1144,7 @@ class Bridge:
                     activities.append({"kind": "tool", "label": label,
                                        "status": item.get("status") or "completed"})
                 elif item_type == "subAgentActivity":
-                    activities.append({"kind": "tool", "label": "Субагент " + str(item.get("agentPath") or ""),
+                    activities.append({"kind": "tool", "label": self.agent_activity_label(item, item.get("agentThreadId") in recent_agents),
                                        "status": "completed"})
                 elif item_type == "reasoning":
                     summary = item.get("summary") or []

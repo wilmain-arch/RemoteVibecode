@@ -10,13 +10,18 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -32,6 +37,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
@@ -50,7 +56,7 @@ internal fun AdbDevicesScreen(
     var devices by remember { mutableStateOf<List<AdbDevice>>(emptyList()) }
     var events by remember { mutableStateOf<List<String>>(emptyList()) }
     var relayAvailable by remember { mutableStateOf(false) }
-    var loading by remember { mutableStateOf(false) }
+    var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf("") }
     var message by remember { mutableStateOf("") }
     var adding by remember { mutableStateOf(false) }
@@ -97,26 +103,22 @@ internal fun AdbDevicesScreen(
     }
 
     LaunchedEffect(Unit) { runAction { refresh() } }
-    BackHandler { when {
-        adding -> adding = false
-        selected.isNotBlank() -> selected = ""
-        else -> onClose()
-    } }
+    val handleBack = {
+        when {
+            adding -> adding = false
+            selected.isNotBlank() -> selected = ""
+            else -> onClose()
+        }
+    }
+    BackHandler(onBack = handleBack)
     val current = devices.firstOrNull { it.id == selected }
     Scaffold(containerColor = MaterialTheme.colorScheme.background, topBar = {
-        Row(Modifier.fillMaxWidth().statusBarsPadding().height(68.dp).padding(horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = { when {
-                adding -> adding = false
-                selected.isNotBlank() -> selected = ""
-                else -> onClose()
-            } }) { UiGlyph(UiIcon.Back, size = 22.dp) }
-            Text(if (adding) "Новое устройство" else if (current != null) current.name else "Устройства ADB",
-                Modifier.padding(start = 12.dp), style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold)
-        }
+        UiScreenHeader(
+            title = if (adding) "Новое устройство" else if (current != null) current.name else "Устройства ADB",
+            onBack = handleBack,
+        )
     }) { inner ->
-        Column(Modifier.fillMaxSize().padding(inner).verticalScroll(rememberScrollState())
+        Column(Modifier.fillMaxSize().padding(inner).imePadding().verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.bodyMedium)
@@ -124,9 +126,26 @@ internal fun AdbDevicesScreen(
                 style = MaterialTheme.typography.bodyMedium)
 
             if (!adding && current == null) {
-                Text("Подключённые телефоны", style = MaterialTheme.typography.headlineSmall)
+                Text("Подключённые телефоны", style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold)
                 Text("Устройство появится на ПК в adb devices после подключения. Беспроводную отладку включает владелец телефона в настройках Android.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (loading && devices.isEmpty()) {
+                    Row(verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                        Text("Загружаю список устройств…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                } else if (!loading && devices.isEmpty() && error.isNotBlank()) {
+                    TextButton(onClick = { runAction { refresh() } }, enabled = !loading) {
+                        UiGlyph(UiIcon.Refresh, size = 18.dp)
+                        Text("Повторить загрузку", modifier = Modifier.padding(start = 6.dp))
+                    }
+                } else if (!loading && devices.isEmpty()) {
+                    Text("Сохранённых устройств пока нет",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodyMedium)
+                }
                 devices.forEach { device ->
                     Surface(Modifier.fillMaxWidth().clickable {
                         selected = device.id; connectPort = device.port; pairingCode = ""; pairingPort = ""
@@ -146,7 +165,9 @@ internal fun AdbDevicesScreen(
                 Button(onClick = { adding = true; name = ""; address = ""; connectPort = "";
                     transport = if (relayAvailable) "ssh_relay" else "direct" },
                     modifier = Modifier.fillMaxWidth()) { Text("Добавить устройство") }
-                TextButton(onClick = { runAction { refresh() } }, enabled = !loading) { Text("Обновить состояния") }
+                TextButton(onClick = { runAction { refresh() } }, enabled = !loading) {
+                    Text(if (loading) "Обновляю…" else "Обновить состояния")
+                }
                 if (events.isNotEmpty()) Section("История соединения") {
                     events.take(8).forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
                 }
@@ -159,9 +180,11 @@ internal fun AdbDevicesScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Section("2 · Сетевой путь") {
-                    TransportChoice("Через домашний сервер", "ssh_relay", transport,
-                        enabled = relayAvailable) { transport = it }
-                    TransportChoice("Напрямую с ПК", "direct", transport) { transport = it }
+                    Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TransportChoice("Через домашний сервер", "ssh_relay", transport,
+                            enabled = relayAvailable) { transport = it }
+                        TransportChoice("Напрямую с ПК", "direct", transport) { transport = it }
+                    }
                     if (!relayAvailable) Text("SSH-ретранслятор не настроен на ПК. Доступно прямое подключение.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -271,7 +294,10 @@ private fun TransportChoice(label: String, value: String, selected: String,
     Row(Modifier.fillMaxWidth().background(
         if (selected == value) MaterialTheme.colorScheme.secondaryContainer
         else MaterialTheme.colorScheme.background, RoundedCornerShape(14.dp))
-        .clickable(enabled = enabled) { onSelect(value) }.padding(14.dp)) {
+        .selectable(selected = selected == value, enabled = enabled, role = Role.RadioButton) {
+            onSelect(value)
+        }.heightIn(min = 48.dp).padding(14.dp),
+        verticalAlignment = Alignment.CenterVertically) {
         UiGlyph(if (selected == value) UiIcon.CircleCheck else UiIcon.Circle,
             size = 19.dp, tint = if (selected == value) MaterialTheme.colorScheme.secondary
                 else MaterialTheme.colorScheme.onSurfaceVariant)
