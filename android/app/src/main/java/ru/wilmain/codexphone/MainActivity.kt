@@ -243,6 +243,9 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
     var status by remember { mutableStateOf(if (token.isBlank())
         (if (BuildConfig.RELAY_ONLY) "Сканируй QR-код агента на ПК" else "Сканируй QR-код на ПК один раз")
         else "Подключаюсь…") }
+    var resetLoading by remember { mutableStateOf(false) }
+    var resetMessage by remember { mutableStateOf("") }
+    var resetRetryKey by remember { mutableStateOf(prefs.getString("resetRetryKey", null)) }
     var usageLimits by remember { mutableStateOf<UsageLimits?>(null) }
     var limitsLoading by remember { mutableStateOf(false) }
     var limitsError by remember { mutableStateOf("") }
@@ -651,7 +654,7 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
                     item.optLong("resetsAt"))
             }
             usageLimits = UsageLimits(parseWindow("fiveHours"), parseWindow("week"),
-                result.optLong("updatedAt"))
+                result.optLong("updatedAt"), if (result.isNull("resetCredits")) null else result.optInt("resetCredits"))
         } catch (error: Exception) {
             limitsError = "Не удалось обновить лимиты"
         } finally {
@@ -893,6 +896,9 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
                 pendingFileDeletes.clear()
                 savePendingDeletes(prefs, emptyList())
                 clearSavedToken(context, prefs)
+                resetRetryKey = null
+                resetMessage = ""
+                prefs.edit().remove("resetRetryKey").commit()
                 status = "Телефон отключён"
             }.onFailure { status = "Не удалось отключить телефон: ${it.message}" }
         }
@@ -1033,6 +1039,40 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
                 }
             },
             onRefreshLimits = { scope.launch { loadLimits() } },
+            resetMessage = resetMessage, resetLoading = resetLoading, resetPending = resetRetryKey != null,
+            onResetLimits = { attempt ->
+                if (!resetLoading) scope.launch {
+                    resetLoading = true
+                    val key = resetRetryKey ?: attempt
+                    resetRetryKey = key
+                    prefs.edit().putString("resetRetryKey", key).commit()
+                    try {
+                        val result = withReachableHost { root -> withContext(Dispatchers.IO) {
+                            val body = JSONObject().put("idempotencyKey", key).toString()
+                                .toRequestBody("application/json".toMediaType())
+                            client.newCall(Request.Builder().url("$root/api/limits/reset")
+                                .header("Authorization", "Bearer $token").post(body).build()).execute().use { response ->
+                                val json = JSONObject(response.body?.string().orEmpty())
+                                if (!response.isSuccessful) error(json.optString("error", "Сброс не выполнен"))
+                                json
+                            }
+                        } }
+                        resetMessage = when (result.optString("outcome")) {
+                            "reset", "alreadyRedeemed" -> "Лимиты сброшены"
+                            "nothingToReset" -> "Сейчас нет лимитов, доступных для сброса"
+                            "noCredit" -> "Нет доступных кредитов сброса"
+                            else -> "Сервер не подтвердил сброс"
+                        }
+                        if (result.optString("outcome") in listOf("reset", "alreadyRedeemed", "nothingToReset", "noCredit")) {
+                            resetRetryKey = null
+                            prefs.edit().remove("resetRetryKey").commit()
+                        }
+                        loadLimits()
+                    } catch (error: Exception) {
+                        resetMessage = "Результат сброса не подтверждён: ${error.message}. Повтор использует тот же запрос."
+                    } finally { resetLoading = false }
+                }
+            },
             onAdbRequest = { path, payload ->
                 withReachableHost { root -> withContext(Dispatchers.IO) {
                     val builder = Request.Builder().url("$root/api/adb/$path")

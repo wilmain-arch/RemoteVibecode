@@ -115,7 +115,7 @@ internal data class ThreadItem(val id: String, val title: String, val status: St
 internal data class ProjectGroup(val id: String, val name: String, val cwd: String?, val threads: List<ThreadItem>)
 internal data class ModelOption(val id: String, val name: String, val efforts: List<String>, val defaultEffort: String)
 internal data class LimitWindow(val remainingPercent: Int, val resetsAt: Long)
-internal data class UsageLimits(val fiveHours: LimitWindow?, val week: LimitWindow?, val updatedAt: Long)
+internal data class UsageLimits(val fiveHours: LimitWindow?, val week: LimitWindow?, val updatedAt: Long, val resetCredits: Int? = null)
 
 private fun effortLabel(value: String): String = when (value) {
     "none" -> "Без усилия"; "minimal" -> "Минимум"; "low" -> "Низкое"
@@ -198,6 +198,10 @@ internal fun CompanionUi(
     onNewChat: (String?) -> Unit,
     onRefreshCatalog: () -> Unit,
     onRefreshLimits: () -> Unit,
+    onResetLimits: (String) -> Unit,
+    resetMessage: String,
+    resetLoading: Boolean,
+    resetPending: Boolean,
     onAdbRequest: suspend (String, JSONObject?) -> JSONObject,
     onModel: (String) -> Unit,
     onEffort: (String) -> Unit,
@@ -245,7 +249,7 @@ internal fun CompanionUi(
     val selectedProjectName = projects.firstOrNull { group ->
         group.id != "other" && group.threads.any { it.id == selectedThreadId }
     }?.name.orEmpty()
-    LaunchedEffect(selectedThreadId, visibleLines.lastOrNull()?.id, visibleQueue.size) {
+    LaunchedEffect(selectedThreadId, visibleLines.lastOrNull()?.id, visibleLines.lastOrNull()?.text, visibleQueue.size) {
         val total = visibleLines.size + visibleQueue.size + if (historyHasMore || historyLoading || historyError.isNotBlank()) 1 else 0
         if (total > 0) {
             val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
@@ -304,6 +308,7 @@ internal fun CompanionUi(
             onNewChat = { projectsOpen = false; onNewChat(it) },
             onRefreshCatalog = onRefreshCatalog,
             onRefreshLimits = onRefreshLimits,
+            onResetLimits = onResetLimits, resetMessage = resetMessage, resetLoading = resetLoading, resetPending = resetPending,
             onDevices = { projectsOpen = false; devicesOpen = true },
             onDisconnect = { disconnectDialog = true },
         )
@@ -577,20 +582,32 @@ internal fun CompanionUi(
                                     }
                                 }
                             }
-                            "outcome" -> Row(Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                                horizontalArrangement = Arrangement.Center,
+                            "system" -> Row(Modifier.fillMaxWidth().padding(vertical = 3.dp),
                                 verticalAlignment = Alignment.CenterVertically) {
-                                val failed = line.text.contains("ошибкой")
-                                val completed = line.text == "Работа Codex завершена"
-                                UiGlyph(if (completed) UiIcon.CircleCheck else UiIcon.Close,
-                                    size = 16.dp,
-                                    tint = if (failed) MaterialTheme.colorScheme.error
-                                        else if (completed) MaterialTheme.colorScheme.secondary
-                                        else MaterialTheme.colorScheme.onSurfaceVariant)
+                                UiGlyph(UiIcon.Terminal, size = 15.dp, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                                 Spacer(Modifier.width(7.dp))
-                                Text(line.text, style = MaterialTheme.typography.labelMedium,
-                                    color = if (failed) MaterialTheme.colorScheme.error
-                                        else MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(line.text, style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            "outcome" -> Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                                val headline = line.text.substringBefore("\n")
+                                val failed = headline.contains("ошибкой")
+                                val completed = headline == "Работа Codex завершена"
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    UiGlyph(if (completed) UiIcon.CircleCheck else UiIcon.Close, size = 16.dp,
+                                        tint = if (failed) MaterialTheme.colorScheme.error
+                                            else if (completed) MaterialTheme.colorScheme.secondary
+                                            else MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Spacer(Modifier.width(7.dp))
+                                    Text(headline, style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (failed) MaterialTheme.colorScheme.error
+                                            else MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                if (line.text.contains("\n")) Text(line.text.substringAfter("\n"),
+                                    Modifier.padding(start = 23.dp, top = 6.dp),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             else -> Column {
                                 Row(verticalAlignment = Alignment.CenterVertically) {

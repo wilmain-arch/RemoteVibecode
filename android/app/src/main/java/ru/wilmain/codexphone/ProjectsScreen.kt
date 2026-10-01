@@ -58,6 +58,7 @@ internal fun ProjectsScreen(
     actionError: String,
     onNewChat: (String?) -> Unit, onRefreshCatalog: () -> Unit,
     onRefreshLimits: () -> Unit,
+    onResetLimits: (String) -> Unit, resetMessage: String, resetLoading: Boolean, resetPending: Boolean,
     onDevices: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
@@ -68,6 +69,14 @@ internal fun ProjectsScreen(
         else -> "$value чатов"
     }
     BackHandler(onBack = onClose)
+    var resetAttempt by remember { mutableStateOf<String?>(null) }
+    resetAttempt?.let { attempt ->
+        AlertDialog(onDismissRequest = { resetAttempt = null },
+            title = { Text("Сбросить лимиты?") },
+            text = { Text("Будет использован один доступный кредит сброса аккаунта. OpenAI определяет, какие окна лимитов можно сбросить. Действие нельзя отменить.") },
+            confirmButton = { TextButton(onClick = { resetAttempt = null; onResetLimits(attempt) }) { Text("Использовать кредит") } },
+            dismissButton = { TextButton(onClick = { resetAttempt = null }) { Text("Отмена") } })
+    }
     var search by remember { mutableStateOf("") }
     var deleteCandidate by remember { mutableStateOf<ThreadItem?>(null) }
     var moveCandidate by remember { mutableStateOf<ThreadItem?>(null) }
@@ -215,6 +224,12 @@ internal fun ProjectsScreen(
                         else limitsError.ifBlank { "Данные о лимитах недоступны" },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    TextButton(onClick = { resetAttempt = java.util.UUID.randomUUID().toString() },
+                        enabled = !resetLoading && (resetPending || (usageLimits?.resetCredits ?: 0) > 0)) {
+                        Text(if (resetLoading) "Сбрасываю…" else if (resetPending) "Проверить результат сброса" else "Сбросить лимиты · кредитов: ${usageLimits?.resetCredits?.toString() ?: "нет данных"}")
+                    }
+                    if (resetMessage.isNotBlank()) Text(resetMessage,
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     if (usageLimits != null && limitsError.isNotBlank()) Text(limitsError,
                         Modifier.padding(top = 5.dp), style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.error)

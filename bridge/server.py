@@ -170,6 +170,8 @@ class Bridge:
         self.selected_thread_id = saved.get("selected_thread_id") or thread_id
         self.draft_threads: dict[str, str | None] = saved.get("draft_threads", {})
         self.project_overrides: dict[str, str] = saved.get("project_overrides", {})
+        self.task_usage: dict[str, dict] = saved.get("task_usage", {})
+        self.usage_events: queue.Queue = queue.Queue(maxsize=2000)
         if thread_id.startswith("draft-") and thread_id not in self.draft_threads:
             self.draft_threads[thread_id] = str(Path.home())
         self.rpc: CodexRpc | None = None
@@ -200,6 +202,7 @@ class Bridge:
         self.worker.start()
         self.rpc_idle_worker = threading.Thread(target=self._close_idle_rpc, daemon=True)
         self.rpc_idle_worker.start()
+        threading.Thread(target=self._track_task_usage, daemon=True).start()
 
     @contextmanager
     def rpc_session(self):
@@ -221,6 +224,11 @@ class Bridge:
             thread_id = params.get("threadId")
             turn = params.get("turn") or {}
             turn_id = turn.get("id") if isinstance(turn, dict) else None
+            if method in ("turn/started", "turn/completed", "thread/tokenUsage/updated", "model/rerouted"):
+                try:
+                    self.usage_events.put_nowait((method, params))
+                except queue.Full:
+                    pass
             with self.turn_lock:
                 if method == "turn/started" and thread_id and turn_id:
                     self.active_turns[thread_id] = turn_id
@@ -233,6 +241,63 @@ class Bridge:
         with self.event_condition:
             self.event_count += 1
             self.event_condition.notify_all()
+
+    def _track_task_usage(self) -> None:
+        # Never make RPC calls from the notification reader: it must remain free
+        # to deliver the responses awaited by callers.
+        while not self.stop_worker.is_set():
+            try:
+                method, params = self.usage_events.get(timeout=1)
+            except queue.Empty:
+                continue
+            turn = params.get("turn") or {}
+            turn_id = params.get("turnId") or turn.get("id")
+            if not turn_id:
+                continue
+            try:
+                if method == "turn/started":
+                    with self.state_lock:
+                        needs_baseline = "before" not in self.task_usage.get(turn_id, {})
+                    snapshot = self.usage_limits() if needs_baseline else None
+                    with self.state_lock:
+                        record = self.task_usage.setdefault(turn_id, {})
+                        record.setdefault("threadId", params.get("threadId"))
+                        if snapshot:
+                            record.setdefault("before", snapshot)
+                            record["baselineObserved"] = True
+                elif method == "thread/tokenUsage/updated":
+                    usage = params.get("tokenUsage") or {}
+                    total, last = usage.get("total") or {}, usage.get("last") or {}
+                    with self.state_lock:
+                        record = self.task_usage.setdefault(turn_id, {"threadId": params.get("threadId")})
+                        if "tokenBaseline" not in record:
+                            record["tokenBaseline"] = {key: max(0, value - last.get(key, 0))
+                                for key, value in total.items() if isinstance(value, int)}
+                        record["tokens"] = {key: max(0, value - record["tokenBaseline"].get(key, value))
+                            for key, value in total.items() if isinstance(value, int)}
+                elif method == "turn/completed":
+                    snapshot = self.usage_limits()
+                    with self.state_lock:
+                        record = self.task_usage.setdefault(turn_id, {"threadId": params.get("threadId")})
+                        record["after"] = snapshot
+                elif method == "model/rerouted":
+                    with self.state_lock:
+                        record = self.task_usage.setdefault(turn_id, {"threadId": params.get("threadId")})
+                        notices = record.setdefault("notices", [])
+                        text = f"Модель изменена сервером: {params.get('fromModel', '?')} → {params.get('toModel', '?')}"
+                        if text not in notices:
+                            notices.append(text)
+                with self.state_lock:
+                    while len(self.task_usage) > 2000:
+                        self.task_usage.pop(next(iter(self.task_usage)))
+                    self._save_state()
+                self._signal_event()
+            except (RpcError, RuntimeError, OSError, queue.Empty):
+                # Usage failures must not stop message delivery.
+                continue
+            finally:
+                with self.state_lock:
+                    self.task_usage.get(turn_id, {}).pop("observationQueued", None)
 
     def wait_event(self, cursor: str, timeout: float = 20.0) -> dict:
         with self.event_condition:
@@ -318,7 +383,7 @@ class Bridge:
 
     def usage_limits(self) -> dict:
         with self.rpc_session() as rpc:
-            result = rpc.call("account/rateLimits/read", {})
+            result = rpc.call("account/rateLimits/read", {}, timeout=8)
         rate_limits = result.get("rateLimits") or {}
         def window(value):
             if not isinstance(value, dict) or not isinstance(value.get("usedPercent"), (int, float)):
@@ -328,7 +393,42 @@ class Bridge:
                     "resetsAt": value.get("resetsAt") if isinstance(value.get("resetsAt"), int) else None}
         return {"fiveHours": window(rate_limits.get("primary")),
                 "week": window(rate_limits.get("secondary")),
+                "resetCredits": (result.get("rateLimitResetCredits") or {}).get("availableCount"),
                 "updatedAt": int(time.time())}
+
+    def reset_limits(self, idempotency_key: str) -> dict:
+        if not isinstance(idempotency_key, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", idempotency_key):
+            raise ValueError("Некорректный идентификатор сброса")
+        with self.rpc_session() as rpc:
+            result = rpc.call("account/rateLimitResetCredit/consume", {"idempotencyKey": idempotency_key})
+        return {"outcome": result.get("outcome"), "limits": self.usage_limits()}
+
+    def task_usage_text(self, turn_id: str) -> str:
+        with self.state_lock:
+            record = dict(self.task_usage.get(turn_id, {}))
+        tokens = record.get("tokens") or {}
+        parts = []
+        if "totalTokens" in tokens:
+            parts.append(f"Наблюдаемые токены: {tokens['totalTokens']:,} · вход {tokens.get('inputTokens', 0):,} · выход {tokens.get('outputTokens', 0):,}")
+        if record and "totalTokens" not in tokens:
+            parts.append("Данные о токенах не получены от Codex.")
+        if record.get("baselineObserved"):
+            parts.append("Начальный замер получен после начала работы.")
+        before, after = record.get("before") or {}, record.get("after") or {}
+        deltas = []
+        for key, label in (("fiveHours", "5ч"), ("week", "неделя")):
+            start, end = before.get(key), after.get(key)
+            if start and end and start.get("resetsAt") == end.get("resetsAt"):
+                change = start["remainingPercent"] - end["remainingPercent"]
+                deltas.append(f"{label}: +{change} п.п." if change >= 0 else f"{label}: лимит восстановился")
+            else:
+                deltas.append(f"{label}: нет сопоставимого замера")
+        if record:
+            parts.append("Изменение лимитов за время задачи · " + " · ".join(deltas))
+            parts.append("Лимиты общие для аккаунта; замер может включать другие чаты и округлён сервером.")
+        else:
+            parts.append("Расход задачи не измерялся.")
+        return "\n".join(parts)
 
     def projects(self) -> dict:
         threads = self.list_threads(limit=500)
@@ -647,6 +747,7 @@ class Bridge:
                 "selected_thread_id": self.selected_thread_id,
                 "draft_threads": self.draft_threads,
                 "project_overrides": self.project_overrides,
+                "task_usage": self.task_usage,
                 "token": self.token,
                 "paired": self.paired,
                 "pending": self.pending,
@@ -714,6 +815,22 @@ class Bridge:
             )
         thread = result.get("thread", {})
         turns = []
+        # Desktop-owned turns may be seen by polling before notifications arrive.
+        # Only observe the latest running task, never invent baselines for old tasks.
+        latest = (thread.get("turns") or [])[-1:]
+        for observed in latest:
+            observed_id = str(observed.get("id") or "")
+            with self.state_lock:
+                record = self.task_usage.get(observed_id, {})
+                needs_start = observed.get("status") == "inProgress" and "before" not in record
+                needs_end = observed.get("status") in ("completed", "interrupted", "failed") and "before" in record and "after" not in record
+                if observed_id and (needs_start or needs_end) and not record.get("observationQueued"):
+                    try:
+                        self.usage_events.put_nowait(("turn/started" if needs_start else "turn/completed",
+                            {"threadId": thread_id, "turn": observed}))
+                        self.task_usage.setdefault(observed_id, {})["observationQueued"] = True
+                    except queue.Full:
+                        pass
         for turn in thread.get("turns", []):
             turn_id = str(turn.get("id") or "")
             started_at = turn.get("startedAt")
@@ -819,6 +936,13 @@ class Bridge:
                     messages.append({"id": f"{turn_id}:generated", "role": "assistant",
                                      "text": "", "images": generated_images[:20],
                                      "time": completed_at or started_at, "turnId": turn_id})
+            turns.append({"id": f"{turn_id}:started", "role": "system", "text": "Codex начал работу",
+                          "time": started_at, "turnId": turn_id})
+            with self.state_lock:
+                notices = list(self.task_usage.get(turn_id, {}).get("notices", []))
+            for index, notice in enumerate(notices):
+                turns.append({"id": f"{turn_id}:notice:{index}", "role": "system", "text": notice,
+                              "time": started_at, "turnId": turn_id})
             if summaries or activities:
                 turns.append({"id": f"{turn_id}:process", "role": "process",
                               "text": "\n".join(summaries[-3:]), "time": started_at,
@@ -837,7 +961,9 @@ class Bridge:
             }.get(outcome)
             if outcome_text:
                 turns.append({"id": f"{turn_id}:outcome", "role": "outcome",
-                              "text": outcome_text, "time": completed_at or started_at,
+                              "text": outcome_text + "\n" + self.task_usage_text(turn_id) +
+                                  ("\n" + str((turn.get("error") or {}).get("message", ""))[:500] if outcome == "failed" else ""),
+                              "time": completed_at or started_at,
                               "turnId": turn_id})
         end = next((index for index, item in enumerate(turns) if item["id"] == before), len(turns)) if before else len(turns)
         start = max(0, end - limit)
@@ -981,6 +1107,10 @@ class Bridge:
                 if effort:
                     params["effort"] = effort
                 try:
+                    try:
+                        usage_before = self.usage_limits()
+                    except (RpcError, RuntimeError, OSError, queue.Empty):
+                        usage_before = None
                     result = rpc.call("turn/start", params)
                 except RpcError as exc:
                     if any(marker in str(exc).lower() for marker in
@@ -988,6 +1118,11 @@ class Bridge:
                         raise BusyError("Задача выполняется") from exc
                     raise
                 turn_id = (result.get("turn") or {}).get("id")
+                if turn_id and usage_before:
+                    with self.state_lock:
+                        self.task_usage.setdefault(turn_id, {"threadId": thread_id})["before"] = usage_before
+                        self.task_usage[turn_id].pop("baselineObserved", None)
+                        self._save_state()
                 if turn_id:
                     with self.turn_lock:
                         self.active_turns[thread_id] = turn_id
@@ -1324,6 +1459,15 @@ def main(argv: list[str] | None = None) -> None:
                 except ValueError as exc:
                     self.send_json(400, {"error": str(exc)})
                 return
+            if route == "/api/limits/reset":
+                try:
+                    data = self.read_json(4096)
+                    self.send_json(200, bridge.reset_limits(data.get("idempotencyKey")))
+                except ValueError as exc:
+                    self.send_json(400, {"error": str(exc)})
+                except (RpcError, RuntimeError, queue.Empty) as exc:
+                    self.send_json(409, {"error": str(exc)})
+                return
             if route == "/api/messages/steer":
                 try:
                     message_id = self.read_json(4096).get("clientMessageId")
@@ -1355,7 +1499,7 @@ def main(argv: list[str] | None = None) -> None:
                     self.send_json(200, bridge.delete_thread(data.get("threadId")))
                 except ValueError as exc:
                     self.send_json(400, {"error": str(exc)})
-                except (RpcError, RuntimeError) as exc:
+                except (RpcError, RuntimeError, queue.Empty) as exc:
                     self.send_json(409, {"error": str(exc)})
                 return
             if route == "/api/threads/project":
@@ -1365,7 +1509,7 @@ def main(argv: list[str] | None = None) -> None:
                         data.get("threadId"), data.get("projectId")))
                 except ValueError as exc:
                     self.send_json(400, {"error": str(exc)})
-                except (RpcError, RuntimeError) as exc:
+                except (RpcError, RuntimeError, queue.Empty) as exc:
                     self.send_json(409, {"error": str(exc)})
                 return
             if route == "/api/threads":
