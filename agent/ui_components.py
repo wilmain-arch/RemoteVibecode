@@ -202,7 +202,7 @@ class ScrollableFrame(tk.Frame):
                                        style="RV.Vertical.TScrollbar")
         self.content = tk.Frame(self.canvas, bg=bg, bd=0, highlightthickness=0)
         self.window = self.canvas.create_window((0, 0), window=self.content, anchor="nw")
-        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.canvas.configure(yscrollcommand=self._set_scrollbar)
         self.canvas.pack(side="left", fill="both", expand=True)
         self.scrollbar.pack(side="right", fill="y")
         self.content.bind("<Configure>", self._content_configure, add="+")
@@ -215,6 +215,14 @@ class ScrollableFrame(tk.Frame):
             widget.bind("<MouseWheel>", self._mousewheel, add="+")
             widget.bind("<Button-4>", lambda _e: self.canvas.yview_scroll(-1, "units"), add="+")
             widget.bind("<Button-5>", lambda _e: self.canvas.yview_scroll(1, "units"), add="+")
+
+    def _set_scrollbar(self, first, last):
+        self.scrollbar.set(first, last)
+        overflow = float(first) > .001 or float(last) < .999
+        if overflow and not self.scrollbar.winfo_manager():
+            self.scrollbar.pack(side="right", fill="y")
+        elif not overflow and self.scrollbar.winfo_manager():
+            self.scrollbar.pack_forget()
 
     def _content_configure(self, _event=None):
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))

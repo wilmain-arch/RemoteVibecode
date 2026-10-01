@@ -427,8 +427,8 @@ class AgentWindow:
         def layout(event=None):
             width = event.width if event is not None else parent.winfo_width()
             if width >= breakpoint:
-                left.grid(row=0, column=0, sticky="nsew", padx=(0, 9), pady=(0, 16))
-                right.grid(row=0, column=1, sticky="nsew", padx=(9, 0), pady=(0, 16))
+                left.grid(row=0, column=0, columnspan=1, sticky="nsew", padx=(0, 9), pady=(0, 16))
+                right.grid(row=0, column=1, columnspan=1, sticky="nsew", padx=(9, 0), pady=(0, 16))
             else:
                 left.grid(row=0, column=0, columnspan=2, sticky="nsew", pady=(0, 12))
                 right.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(0, 16))
@@ -436,17 +436,35 @@ class AgentWindow:
         parent.after_idle(layout)
 
     def _status_row(self, parent, name, description, active):
-        row = tk.Frame(parent, bg=COLORS["panel_raised"], padx=13, pady=10)
+        row = tk.Frame(parent, bg=COLORS["panel"], padx=13, pady=12)
         row.pack(fill="x", pady=4)
-        tk.Label(row, text="●", bg=COLORS["panel_raised"],
+        tk.Label(row, text="●", bg=COLORS["panel"],
                  fg=COLORS["green"] if active else COLORS["dim"],
                  font=(FONT, 13, "bold")).pack(side="left", padx=(0, 10))
-        text = tk.Frame(row, bg=COLORS["panel_raised"])
+        text = tk.Frame(row, bg=COLORS["panel"])
         text.pack(side="left", fill="x", expand=True)
-        tk.Label(text, text=name, bg=COLORS["panel_raised"], fg=COLORS["white"],
+        tk.Label(text, text=name, bg=COLORS["panel"], fg=COLORS["white"],
                  font=(FONT, TYPE["body"], "bold"), anchor="w").pack(fill="x")
-        tk.Label(text, text=description, bg=COLORS["panel_raised"], fg=COLORS["muted"],
+        tk.Label(text, text=description, bg=COLORS["panel"], fg=COLORS["muted"],
                  font=(FONT, TYPE["small"]), anchor="w").pack(fill="x", pady=(2, 0))
+
+    def _status_tiles(self, parent, items):
+        strip = tk.Frame(parent, bg=COLORS["panel"])
+        strip.pack(fill="x", pady=(12, 16))
+        for index, (symbol, name, description, active) in enumerate(items):
+            strip.grid_columnconfigure(index, weight=1, uniform="status")
+            tile = tk.Frame(strip, bg=COLORS["panel"])
+            tile.grid(row=0, column=index, sticky="nsew", padx=8)
+            picture = icon_photo(self.root, symbol, size=44,
+                                 color=COLORS["white"] if active else COLORS["dim"])
+            icon = tk.Label(tile, image=picture, bg=COLORS["panel_raised"], padx=18, pady=18)
+            icon.image = picture
+            icon.pack(pady=(0, 12))
+            tk.Label(tile, text="●  " + name, bg=COLORS["panel"],
+                     fg=COLORS["green"] if active else COLORS["muted"],
+                     font=(FONT, TYPE["body"], "bold")).pack()
+            tk.Label(tile, text=description, bg=COLORS["panel"], fg=COLORS["muted"],
+                     font=(FONT, TYPE["small"])).pack(pady=(4, 0))
 
     def _page_overview(self, parent):
         if not self.configured:
@@ -459,8 +477,8 @@ class AgentWindow:
         pair, pair_body = card(top, padding=18)
         status, status_body = card(top, padding=18)
         pair_body.grid_columnconfigure(1, weight=1)
-        qr_box = tk.Frame(pair_body, bg=COLORS["white"], width=174, height=174,
-                          highlightthickness=2, highlightbackground=COLORS["blue"])
+        qr_box = tk.Frame(pair_body, bg=COLORS["panel_raised"], width=174, height=174,
+                          highlightthickness=0)
         qr_box.grid(row=0, column=0, rowspan=3, sticky="nw", padx=(0, 18))
         qr_box.grid_propagate(False)
         path = Path(self.pairing_path) if self.pairing_path else None
@@ -474,10 +492,12 @@ class AgentWindow:
                 tk.Label(qr_box, text="QR-код\nнедоступен", bg=COLORS["white"], fg=COLORS["panel"],
                          font=(FONT, TYPE["body"], "bold")).place(relx=.5, rely=.5, anchor="center")
         else:
-            title = "Телефон привязан" if self.paired() else "QR-код появится\nпосле запуска моста"
-            tk.Label(qr_box, text=title, bg=COLORS["white"], fg=COLORS["panel"],
-                     font=(FONT, TYPE["body"], "bold"), justify="center", wraplength=145).place(
-                         relx=.5, rely=.5, anchor="center")
+            self.pairing_badge = icon_photo(self.root, "phone", size=64, color=COLORS["green"])
+            tk.Label(qr_box, image=self.pairing_badge, bg=COLORS["panel_raised"]).place(
+                relx=.5, rely=.40, anchor="center")
+            tk.Label(qr_box, text="Привязан" if self.paired() else "Подключить", bg=COLORS["panel_raised"],
+                     fg=COLORS["muted"], font=(FONT, TYPE["body"])).place(
+                         relx=.5, rely=.74, anchor="center")
 
         tk.Label(pair_body, text="Телефон подключён" if self.paired() else "Подключить телефон",
                  bg=COLORS["panel"], fg=COLORS["white"], font=(FONT, TYPE["section"], "bold"),
@@ -499,9 +519,11 @@ class AgentWindow:
             qr_button.configure(state="disabled")
 
         heading(status_body, "Статус подключения").pack(anchor="w", pady=(0, 8))
-        self._status_row(status_body, "Codex", "Активен" if self.bridge_ready else "Ожидание", self.bridge_ready)
-        self._status_row(status_body, "Сервер", "Доступен" if self.relay_ready else "Нет связи", self.relay_ready)
-        self._status_row(status_body, "Телефон", "Привязан" if self.paired() else "Ожидает привязки", self.paired())
+        self._status_tiles(status_body, (
+            ("home", "Codex", "Активен" if self.bridge_ready else "Ожидание", self.bridge_ready),
+            ("link", "Сервер", "Доступен" if self.relay_ready else "Нет связи", self.relay_ready),
+            ("phone", "Телефон", "Привязан" if self.paired() else "Не привязан", self.paired()),
+        ))
         tk.Label(status_body, text="◇  Соединение защищено сквозным шифрованием",
                  bg=COLORS["panel_raised"], fg=COLORS["muted"], font=(FONT, TYPE["small"]),
                  padx=10, pady=8, anchor="w").pack(fill="x", pady=(7, 0))
@@ -519,7 +541,7 @@ class AgentWindow:
         tk.Label(labels, text="Привязанный телефон" if self.paired() else "Телефон не привязан",
                  bg=COLORS["panel_raised"], fg=COLORS["white"],
                  font=(FONT, TYPE["body"], "bold"), anchor="w").pack(fill="x")
-        tk.Label(labels, text="Последняя активность не предоставляется мостом" if self.paired() else "Ожидает привязки",
+        tk.Label(labels, text="Подключён к этому компьютеру" if self.paired() else "Ожидает привязки",
                  bg=COLORS["panel_raised"], fg=COLORS["muted"],
                  font=(FONT, TYPE["small"]), anchor="w").pack(fill="x", pady=(4, 0))
         action = "Отключить" if self.paired() else "Показать QR-код"
@@ -558,7 +580,7 @@ class AgentWindow:
         tk.Label(labels, text="Телефон привязан" if self.paired() else "Телефон не привязан",
                  bg=COLORS["panel_raised"], fg=COLORS["white"],
                  font=(FONT, TYPE["section"], "bold"), anchor="w").pack(fill="x")
-        tk.Label(labels, text="Последняя активность не предоставляется мостом" if self.paired() else
+        tk.Label(labels, text="Подключён к этому компьютеру" if self.paired() else
                  "Создайте QR-код и отсканируйте его в приложении RemoteVibecode.",
                  bg=COLORS["panel_raised"], fg=COLORS["muted"], font=(FONT, TYPE["body"]),
                  anchor="w", justify="left", wraplength=650).pack(fill="x", pady=(6, 0))
@@ -663,9 +685,6 @@ class AgentWindow:
             else:
                 label, callback = "Скачать обновление", self.download_update
             AppButton(actions, label, callback, primary=True, compact=True).grid(row=0, column=1, sticky="w", padx=8)
-            AppButton(actions, "Все изменения на GitHub",
-                      self.open_release_notes,
-                      compact=True).grid(row=1, column=0, sticky="w", pady=(8, 0))
 
         notes = (info.get("manifest", {}).get("notes", "") if info else "") or (
             "Скачивание не прерывает работу чата. Установка ждёт завершения задач и очереди сообщений.\n"
@@ -673,19 +692,22 @@ class AgentWindow:
             "Arch: установка через pacman с системным запросом прав администратора.\n"
             "Привязка телефона, настройки и файлы сохраняются.")
         _, notes_body = self._card(parent, "Что изменилось" if info.get("manifest", {}).get("notes") else "Как проходит обновление")
-        row = tk.Frame(notes_body, bg=COLORS["panel"])
-        row.pack(fill="both", expand=True)
-        text = ScrolledText(row, height=9, wrap="word", takefocus=True, bg=COLORS["panel_raised"],
-                            fg=COLORS["muted"], insertbackground=COLORS["white"],
-                            relief="flat", bd=0, highlightthickness=1,
-                            highlightbackground=COLORS["edge"], highlightcolor=COLORS["focus"],
-                            font=(FONT, TYPE["body"]), padx=10, pady=8)
-        self._style_text_scrollbar(text)
-        text.insert("1.0", notes)
-        text.configure(state="disabled")
-        text.pack(side="left", fill="both", expand=True)
-        AppButton(row, "Копировать заметки", lambda value=notes: self.copy_text(value),
-                  compact=True).pack(side="left", padx=(10, 0), anchor="n")
+        for raw_line in notes.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            is_heading = line.startswith("#")
+            line = line.lstrip("#").strip() if is_heading else line
+            if line.startswith(("- ", "* ")):
+                line = "•  " + line[2:]
+            line = line.replace("**", "").replace("`", "")
+            label = body_label(notes_body, line, muted=not is_heading,
+                               size=TYPE["body"] if not is_heading else TYPE["section"],
+                               wraplength=900)
+            label.pack(fill="x", pady=(0, 12 if is_heading else 8))
+            self._adapt_wrap(label, 900)
+        AppButton(notes_body, "Открыть релиз на GitHub", self.open_release_notes,
+                  compact=True).pack(anchor="w", pady=(12, 0))
 
     def switch(self, page):
         if self.page == "Настройки" and self.form:

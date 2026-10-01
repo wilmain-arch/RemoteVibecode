@@ -32,9 +32,9 @@ TYPE = {
     "display": 28,
     "page": 26,
     "section": 16,
-    "body": 11,
-    "small": 9,
-    "button": 10,
+    "body": 12,
+    "small": 10,
+    "button": 11,
     "mono": 10,
 }
 
