@@ -206,6 +206,7 @@ internal fun CompanionUi(
     resetMessage: String,
     resetLoading: Boolean,
     resetPending: Boolean,
+    onSubagentRequest: suspend (String, JSONObject?) -> JSONObject,
     onAdbRequest: suspend (String, JSONObject?) -> JSONObject,
     onModel: (String) -> Unit,
     onEffort: (String) -> Unit,
@@ -235,6 +236,7 @@ internal fun CompanionUi(
     var modelSheet by remember { mutableStateOf(false) }
     var draftModel by remember { mutableStateOf("") }
     var draftEffort by remember { mutableStateOf("") }
+    var subagentsOpen by remember { mutableStateOf(false) }
     var filesOpen by remember { mutableStateOf(false) }
     var projectsOpen by remember { mutableStateOf(false) }
     var devicesOpen by remember { mutableStateOf(false) }
@@ -273,6 +275,10 @@ internal fun CompanionUi(
         }
     }
     val modelName = models.firstOrNull { it.id == selectedModel }?.name ?: selectedModel.ifBlank { "Модель чата" }
+    if (subagentsOpen && paired) {
+        SubagentsScreen(selectedThreadId, { subagentsOpen = false }, onSubagentRequest, loadImage)
+        return
+    }
     if (filesOpen && paired) {
         WorkspaceFilesScreen(
             projectName = projectName, rootName = workspaceRoot, threadId = selectedThreadId,
@@ -357,6 +363,9 @@ internal fun CompanionUi(
                             Text(if (updateAvailable) "Есть обновление" else "Обновления")
                         }
                         if (paired) {
+                        TextButton(onClick = { subagentsOpen = true }, modifier = Modifier.size(48.dp)) {
+                            UiGlyph(UiIcon.Agents, "Субагенты", 22.dp)
+                        }
                         TextButton(onClick = { filesOpen = true; onBrowseWorkspace(""); onFetchFiles() },
                             modifier = Modifier.size(48.dp).semantics { contentDescription = "Файлы проекта" }) {
                             UiGlyph(UiIcon.Files, size = 22.dp)

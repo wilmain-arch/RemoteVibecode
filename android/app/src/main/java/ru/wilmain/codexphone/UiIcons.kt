@@ -38,6 +38,7 @@ internal enum class UiIcon(@DrawableRes val drawable: Int) {
     Loader(R.drawable.ui_loader_circle),
     Message(R.drawable.ui_message_square),
     List(R.drawable.ui_list),
+    Agents(R.drawable.ui_agents),
     Copy(R.drawable.ui_copy),
     Trash(R.drawable.ui_trash),
 }

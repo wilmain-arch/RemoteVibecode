@@ -1,0 +1,334 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "RemoteVibecode — API субагентов (фрагмент)",
+    "description": "Только новые методы; не полная спецификация моста.",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "https://localhost:18765",
+      "description": "Мост агента ПК"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Непрозрачный токен сопряжения"
+      }
+    }
+  },
+  "paths": {
+    "/api/subagents": {
+      "get": {
+        "summary": "Список субагентов текущего чата",
+        "description": "Список субагентов текущего чата",
+        "operationId": "subagents",
+        "parameters": [
+          {
+            "name": "threadId",
+            "in": "query",
+            "required": true,
+            "description": "ID основного чата",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Результат",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ошибка запроса",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Ошибка запроса",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ошибка запроса",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/subagents/history": {
+      "get": {
+        "summary": "История субагента",
+        "description": "История субагента",
+        "operationId": "subagents_history",
+        "parameters": [
+          {
+            "name": "threadId",
+            "in": "query",
+            "required": true,
+            "description": "ID основного чата",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "agentId",
+            "in": "query",
+            "required": true,
+            "description": "ID субагента",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Курсор ранней истории",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Результат",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ошибка запроса",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Ошибка запроса",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ошибка запроса",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/subagents/action": {
+      "post": {
+        "summary": "Управление субагентом",
+        "description": "Отправляет задачу или уточнение либо прерывает текущую задачу. Проверяет принадлежность к дереву чата.",
+        "operationId": "subagent_action",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "threadId",
+                  "agentId",
+                  "action"
+                ],
+                "properties": {
+                  "threadId": {
+                    "type": "string"
+                  },
+                  "agentId": {
+                    "type": "string"
+                  },
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "send",
+                      "interrupt"
+                    ]
+                  },
+                  "text": {
+                    "type": "string",
+                    "maxLength": 32000
+                  },
+                  "messageId": {
+                    "type": "string",
+                    "description": "Обязателен для send; сохраняется при повторе запроса"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Команда принята",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "accepted": {
+                      "type": "boolean"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ошибка запроса",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Ошибка запроса",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ошибка запроса",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1085,6 +1085,19 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
                     } finally { resetLoading = false }
                 }
             },
+            onSubagentRequest = { path, payload ->
+                withReachableHost { root -> withContext(Dispatchers.IO) {
+                    val builder = Request.Builder().url("$root/api/$path")
+                        .header("Authorization", "Bearer $token")
+                    if (payload != null) builder.post(payload.toString()
+                        .toRequestBody("application/json".toMediaType()))
+                    client.newCall(builder.build()).execute().use { response ->
+                        val result = JSONObject(response.body?.string().orEmpty())
+                        if (!response.isSuccessful) error(result.optString("error", "Ошибка субагентов"))
+                        result
+                    }
+                } }
+            },
             onAdbRequest = { path, payload ->
                 withReachableHost { root -> withContext(Dispatchers.IO) {
                     val builder = Request.Builder().url("$root/api/adb/$path")

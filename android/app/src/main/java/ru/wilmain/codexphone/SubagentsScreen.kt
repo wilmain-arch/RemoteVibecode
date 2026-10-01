@@ -1,0 +1,262 @@
+package ru.wilmain.codexphone
+
+import android.net.Uri
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import org.json.JSONObject
+import java.util.UUID
+
+private data class Subagent(val id: String, val parentId: String, val name: String,
+    val role: String, val task: String, val status: String, val message: String, val canSend: Boolean)
+
+private fun agentStatus(status: String) = when (status) {
+    "running", "active" -> "Работает"
+    "pendingInit" -> "Запускается"
+    "completed" -> "Завершил работу"
+    "interrupted" -> "Остановлен"
+    "errored", "systemError" -> "Ошибка"
+    "shutdown" -> "Закрыт"
+    "notFound" -> "Недоступен"
+    "idle" -> "Ожидает"
+    "notLoaded" -> "Не загружен"
+    else -> "Статус неизвестен"
+}
+
+@Composable
+internal fun SubagentsScreen(threadId: String, onClose: () -> Unit,
+    request: suspend (String, JSONObject?) -> JSONObject, loadImage: suspend (String) -> ByteArray) {
+    val scope = rememberCoroutineScope()
+    var agents by remember(threadId) { mutableStateOf(emptyList<Subagent>()) }
+    var selectedId by remember(threadId) { mutableStateOf<String?>(null) }
+    var loading by remember(threadId) { mutableStateOf(true) }
+    var error by remember(threadId) { mutableStateOf("") }
+    var notice by remember(selectedId) { mutableStateOf("") }
+    var history by remember(selectedId) { mutableStateOf(emptyList<JSONObject>()) }
+    var cursor by remember(selectedId) { mutableStateOf<String?>(null) }
+    var historyReady by remember(selectedId) { mutableStateOf(false) }
+    var historyBusy by remember(selectedId) { mutableStateOf(false) }
+    var input by remember(threadId, selectedId) { mutableStateOf("") }
+    var messageId by remember(threadId, selectedId) { mutableStateOf(UUID.randomUUID().toString()) }
+    var actionBusy by remember { mutableStateOf(false) }
+    var confirmStop by remember { mutableStateOf(false) }
+    var refresh by remember { mutableIntStateOf(0) }
+    val selected = agents.firstOrNull { it.id == selectedId }
+    val listState = remember(selectedId) { androidx.compose.foundation.lazy.LazyListState() }
+    val rootQuery = "threadId=${Uri.encode(threadId)}"
+    fun back() { if (actionBusy) return; if (selectedId != null) selectedId = null else onClose() }
+    BackHandler { back() }
+    LaunchedEffect(threadId, selectedId, refresh) {
+        while (true) {
+            try {
+                val array = request("subagents?$rootQuery", null).optJSONArray("agents")
+                agents = (0 until (array?.length() ?: 0)).mapNotNull { index ->
+                    val item = array?.optJSONObject(index) ?: return@mapNotNull null
+                    Subagent(item.optString("id"), item.optString("parentId"), item.optString("name"),
+                        item.optString("role"), item.optString("task"), item.optString("status"),
+                        item.optString("message"), item.optBoolean("canSend"))
+                }
+                val id = selectedId
+                if (id != null) {
+                    val result = request("subagents/history?$rootQuery&agentId=${Uri.encode(id)}", null)
+                    val rows = result.optJSONArray("turns")
+                    val recent = (0 until (rows?.length() ?: 0)).mapNotNull { rows?.optJSONObject(it) }
+                    val nearBottom = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index?.let {
+                        it >= listState.layoutInfo.totalItemsCount - 3
+                    } ?: true
+                    val freshIds = recent.map { it.optString("id") }.toSet()
+                    val overlap = history.indexOfFirst { it.optString("id") in freshIds }
+                    history = (if (overlap >= 0) history.take(overlap) else emptyList()) + recent
+                    if (!historyReady) cursor = result.optString("nextBefore").takeIf {
+                        result.optBoolean("hasMore") && it.isNotBlank() && it != "null"
+                    }
+                    historyReady = true
+                    if (nearBottom && history.isNotEmpty()) {
+                        withFrameNanos { }
+                        listState.scrollToItem(history.size + 1)
+                    }
+                }
+                error = ""
+            } catch (cancel: CancellationException) { throw cancel }
+            catch (failure: Exception) { error = failure.message ?: "Нет связи с агентом ПК" }
+            finally { loading = false }
+            delay(4000)
+        }
+    }
+    fun act(action: String) {
+        val id = selectedId ?: return
+        if (actionBusy) return
+        actionBusy = true
+        scope.launch {
+            try {
+                val payload = JSONObject().put("threadId", threadId).put("agentId", id)
+                    .put("action", action).put("text", input).put("messageId", messageId)
+                val result = request("subagents/action", payload)
+                notice = result.optString("message")
+                if (action == "send") { input = ""; messageId = UUID.randomUUID().toString() }
+                refresh++
+            } catch (cancel: CancellationException) { throw cancel }
+            catch (failure: Exception) { notice = "Не удалось выполнить: ${failure.message}" }
+            finally { actionBusy = false }
+        }
+    }
+    Scaffold(containerColor = MaterialTheme.colorScheme.background,
+        topBar = {
+            Row(Modifier.fillMaxWidth().statusBarsPadding().height(70.dp).padding(horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = ::back, modifier = Modifier.size(48.dp)) {
+                    UiGlyph(UiIcon.Back, "Назад", 22.dp)
+                }
+                Column(Modifier.weight(1f).padding(start = 4.dp)) {
+                    Text(selected?.name ?: "Субагенты", style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(if (selectedId == null) "${agents.count { it.status == "running" }} работают · ${agents.size} всего"
+                        else selected?.let { agentStatus(it.status) } ?: "Загрузка",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                TextButton(onClick = { refresh++ }, modifier = Modifier.size(48.dp)) {
+                    UiGlyph(UiIcon.Refresh, "Обновить", 21.dp)
+                }
+            }
+        }, bottomBar = {
+            if (selectedId != null) Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background)
+                .imePadding().navigationBarsPadding().padding(14.dp)) {
+                if (notice.isNotBlank()) Text(notice, style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(bottom = 8.dp))
+                if (selected?.canSend == true) {
+                    TextField(input, { input = it; messageId = UUID.randomUUID().toString() },
+                        modifier = Modifier.fillMaxWidth(), placeholder = { Text("Уточнение или новая задача") },
+                        maxLines = 4, enabled = !actionBusy, shape = RoundedCornerShape(18.dp),
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                            focusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent,
+                            unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        if (selected.status == "running") TextButton(onClick = { confirmStop = true },
+                            enabled = !actionBusy) { Text("Остановить", color = MaterialTheme.colorScheme.error) }
+                        TextButton(onClick = { act("send") }, enabled = input.isNotBlank() && !actionBusy) {
+                            Text(if (selected.status == "running") "Корректировать" else "Отправить")
+                        }
+                    }
+                } else {
+                    Text("Desktop не разрешает прямой ввод этому агенту.", style = MaterialTheme.typography.bodySmall)
+                    if (selected?.status == "running") TextButton(onClick = { confirmStop = true },
+                        enabled = !actionBusy) { Text("Остановить", color = MaterialTheme.colorScheme.error) }
+                }
+                if (actionBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
+            }
+        }) { padding ->
+        LazyColumn(Modifier.fillMaxSize().padding(padding), state = listState,
+            contentPadding = PaddingValues(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            item {
+                if (error.isNotBlank()) Surface(color = MaterialTheme.colorScheme.errorContainer,
+                    shape = RoundedCornerShape(18.dp)) {
+                    Text("Не удалось обновить: $error", Modifier.padding(14.dp),
+                        color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodySmall)
+                } else if (loading) CircularProgressIndicator(Modifier.padding(16.dp))
+            }
+            if (selectedId == null) {
+                if (!loading && agents.isEmpty() && error.isBlank()) item {
+                    Column {
+                        Text("Пока нет субагентов", style = MaterialTheme.typography.titleMedium)
+                        Text("Когда Codex поручит часть задачи агентам, они появятся здесь.",
+                            Modifier.padding(top = 8.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                items(agents, key = { it.id }) { agent ->
+                    Surface(onClick = { selectedId = agent.id }, shape = RoundedCornerShape(20.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant) {
+                        Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                UiGlyph(UiIcon.Agents, size = 21.dp)
+                                Text(agent.name, Modifier.weight(1f).padding(horizontal = 10.dp),
+                                    fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                UiGlyph(UiIcon.ChevronRight, "Открыть чат агента", 20.dp)
+                            }
+                            Text(agentStatus(agent.status) + if (agent.role.isBlank()) "" else " · ${agent.role}",
+                                Modifier.padding(top = 8.dp), style = MaterialTheme.typography.labelMedium,
+                                color = if (agent.status == "running") MaterialTheme.colorScheme.secondary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant)
+                            if (agent.task.isNotBlank()) Text(agent.task, Modifier.padding(top = 8.dp),
+                                maxLines = 4, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
+                            if (agent.parentId != threadId) Text("Вложенный агент", Modifier.padding(top = 6.dp),
+                                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            } else {
+                item {
+                    Column {
+                    selected?.let { agent ->
+                        if (agent.task.isNotBlank()) Text(agent.task, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodySmall)
+                    }
+                    if (cursor != null) TextButton(enabled = !historyBusy, onClick = {
+                        historyBusy = true
+                        val requestedId = selectedId
+                        val requestedCursor = cursor
+                        scope.launch {
+                            try {
+                                val result = request("subagents/history?$rootQuery&agentId=${Uri.encode(requestedId)}&before=${Uri.encode(requestedCursor)}", null)
+                                if (selectedId != requestedId) return@launch
+                                val rows = result.optJSONArray("turns")
+                                val older = (0 until (rows?.length() ?: 0)).mapNotNull { rows?.optJSONObject(it) }
+                                history = (older + history).distinctBy { it.optString("id") }
+                                cursor = result.optString("nextBefore").takeIf { result.optBoolean("hasMore") && it.isNotBlank() && it != "null" }
+                            } catch (cancel: CancellationException) { throw cancel }
+                            catch (failure: Exception) { notice = "История недоступна: ${failure.message}" }
+                            finally { historyBusy = false }
+                        }
+                    }) { Text(if (historyBusy) "Загрузка…" else "Показать ранние сообщения") }
+                    if (!historyReady && error.isBlank()) CircularProgressIndicator(Modifier.padding(16.dp))
+                    }
+                }
+                items(history, key = { it.optString("id") }) { row ->
+                    val role = row.optString("role")
+                    Surface(shape = RoundedCornerShape(18.dp), color = if (role == "user")
+                        MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.background) {
+                        Column(Modifier.fillMaxWidth().padding(if (role == "user") 14.dp else 4.dp)) {
+                            Text(when(role) { "user" -> "Задача / уточнение"; "process" -> "Ход работы"
+                                "system" -> "Событие"; else -> selected?.name ?: "Агент" },
+                                style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            SelectionContainer { MarkdownContent(row.optString("text"), compact = role == "system" || role == "process") }
+                            val activities = row.optJSONArray("activities")
+                            for (index in 0 until (activities?.length() ?: 0)) {
+                                Text(activities?.optJSONObject(index)?.optString("label").orEmpty(),
+                                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            val images = row.optJSONArray("images")
+                            for (index in 0 until (images?.length() ?: 0)) {
+                                images?.optJSONObject(index)?.let { image -> RemoteImage(
+                                    "/api/chat/image?id=${Uri.encode(image.optString("id"))}", image.optString("name"),
+                                    loadImage, Modifier.fillMaxWidth().height(260.dp)) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (confirmStop) AlertDialog(onDismissRequest = { confirmStop = false },
+        title = { Text("Остановить ${selected?.name ?: "агента"}?") },
+        text = { Text("Текущая задача этого субагента будет прервана. Основной агент продолжит работу.") },
+        confirmButton = { TextButton(onClick = { confirmStop = false; act("interrupt") }) { Text("Остановить") } },
+        dismissButton = { TextButton(onClick = { confirmStop = false }) { Text("Отмена") } })
+}

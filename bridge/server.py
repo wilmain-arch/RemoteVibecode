@@ -402,6 +402,115 @@ class Bridge:
                   for thread_id, cwd in self.draft_threads.items()]
         return (drafts + threads)[:limit]
 
+    def subagents(self, thread_id: str | None) -> dict:
+        root_id = self._thread_id(thread_id)
+        if root_id in self.draft_threads:
+            return {"agents": []}
+        with self.rpc_session() as rpc:
+            root = rpc.call("thread/read", {"threadId": root_id, "includeTurns": True})["thread"]
+            hints = {}
+            for turn in root.get("turns", []):
+                for item in turn.get("items", []):
+                    if item.get("type") == "collabAgentToolCall":
+                        for agent_id in item.get("receiverThreadIds", []):
+                            hint = hints.setdefault(agent_id, {})
+                            if item.get("tool") == "spawnAgent":
+                                hint["task"] = item.get("prompt") or ""
+                            state = (item.get("agentsStates") or {}).get(agent_id) or {}
+                            hint.update({key: value for key, value in state.items() if value is not None})
+            agents, cursor = [], None
+            while True:
+                params = {"ancestorThreadId": root_id, "limit": 100,
+                          "sourceKinds": ["subAgent", "subAgentReview", "subAgentCompact",
+                                          "subAgentThreadSpawn", "subAgentOther"],
+                          "sortKey": "created_at"}
+                if cursor:
+                    params["cursor"] = cursor
+                result = rpc.call("thread/list", params)
+                for thread in result.get("data", []):
+                    agent_id = thread["id"]
+                    hint = hints.get(agent_id, {})
+                    status = (thread.get("status") or {}).get("type", "unknown")
+                    agents.append({"id": agent_id, "parentId": thread.get("parentThreadId"),
+                                   "name": thread.get("agentNickname") or thread.get("name") or "Субагент",
+                                   "role": thread.get("agentRole") or "",
+                                   "task": hint.get("task") or thread.get("preview") or "",
+                                   "status": "running" if status == "active" else (
+                                       hint["status"] if hint.get("status") in
+                                       ("completed", "interrupted", "errored", "shutdown") else status),
+                                   "message": hint.get("message") or "",
+                                   "canSend": thread.get("canAcceptDirectInput") is not False})
+                cursor = result.get("nextCursor")
+                if not cursor or not result.get("data") or len(agents) >= 500:
+                    break
+            known_ids = {agent["id"] for agent in agents}
+            for agent_id, hint in hints.items():
+                if agent_id in known_ids:
+                    continue
+                try:
+                    thread = rpc.call("thread/read", {"threadId": agent_id, "includeTurns": False})["thread"]
+                except RpcError:
+                    continue
+                if thread.get("parentThreadId") != root_id:
+                    continue
+                status = (thread.get("status") or {}).get("type", "unknown")
+                agents.append({"id": agent_id, "parentId": root_id,
+                               "name": thread.get("agentNickname") or "Субагент",
+                               "role": thread.get("agentRole") or "",
+                               "task": hint.get("task") or thread.get("preview") or "",
+                               "status": "running" if status == "active" else (
+                                       hint["status"] if hint.get("status") in
+                                       ("completed", "interrupted", "errored", "shutdown") else status),
+                               "message": hint.get("message") or "",
+                               "canSend": thread.get("canAcceptDirectInput") is not False})
+        return {"agents": agents}
+
+    def subagent_check(self, thread_id: str | None, agent_id: str) -> dict:
+        agent_id = self._thread_id(agent_id)
+        agent = next((agent for agent in self.subagents(thread_id)["agents"]
+                      if agent["id"] == agent_id), None)
+        if agent is None:
+            raise ValueError("Субагент не принадлежит текущему чату")
+        return agent
+
+    def subagent_action(self, data: dict) -> dict:
+        thread_id, agent_id = data.get("threadId"), data.get("agentId")
+        agent = self.subagent_check(thread_id, agent_id)
+        action = data.get("action")
+        if action not in ("send", "interrupt"):
+            raise ValueError("Неизвестное действие")
+        with self.rpc_session() as rpc:
+            thread = rpc.call("thread/read", {"threadId": agent_id, "includeTurns": True})["thread"]
+            active = next((turn for turn in reversed(thread.get("turns", []))
+                           if turn.get("status") == "inProgress"), None)
+            if action == "interrupt":
+                if active:
+                    rpc.call("turn/interrupt", {"threadId": agent_id, "turnId": active["id"]})
+                return {"accepted": True, "message": "Остановка запрошена" if active else "Агент уже не выполняет задачу"}
+            text, message_id = data.get("text"), data.get("messageId")
+            if not isinstance(text, str) or not text.strip() or len(text) > 32000:
+                raise ValueError("Введите сообщение до 32 000 символов")
+            if not isinstance(message_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", message_id):
+                raise ValueError("Некорректный ID сообщения")
+            if not agent["canSend"] or thread.get("canAcceptDirectInput") is False:
+                raise ValueError("Desktop не разрешает прямой ввод этому агенту")
+            if active:
+                with self.send_lock:
+                    if time.monotonic() < self.update_until:
+                        raise ValueError("Агент ПК устанавливает обновление")
+                    if message_id in self.sent_messages:
+                        return self.sent_messages[message_id]
+                    result = rpc.call("turn/steer", {"threadId": agent_id,
+                        "expectedTurnId": active["id"], "clientUserMessageId": message_id,
+                        "input": [{"type": "text", "text": text.strip()}]})
+                    response = {"accepted": True, "message": "Уточнение отправлено", "turnId": result.get("turnId")}
+                    with self.state_lock:
+                        self.sent_messages[message_id] = response
+                        self._save_state()
+                    return response
+        self.send(text, [], message_id, agent_id)
+        return {"accepted": True, "message": "Задача отправлена"}
+
     def usage_limits(self) -> dict:
         with self.rpc_session() as rpc:
             result = rpc.call("account/rateLimits/read", {}, timeout=8)
@@ -980,6 +1089,16 @@ class Bridge:
                     image = self.register_chat_image(str(path)) if path else None
                     if image is not None:
                         generated_images.append(image)
+                elif item_type == "collabAgentToolCall":
+                    label = {"spawnAgent": "Создан субагент", "sendInput": "Уточнение субагенту",
+                             "sendMessage": "Сообщение субагенту", "followupTask": "Новая задача субагенту",
+                             "interruptAgent": "Остановка субагента", "closeAgent": "Закрытие субагента",
+                             "wait": "Ожидание субагентов"}.get(item.get("tool"), "Действие с субагентами")
+                    activities.append({"kind": "tool", "label": label,
+                                       "status": item.get("status") or "completed"})
+                elif item_type == "subAgentActivity":
+                    activities.append({"kind": "tool", "label": "Субагент " + str(item.get("agentPath") or ""),
+                                       "status": "completed"})
                 elif item_type == "reasoning":
                     summary = item.get("summary") or []
                     if isinstance(summary, list):
@@ -1529,6 +1648,14 @@ def main(argv: list[str] | None = None) -> None:
                 return
             if not self.authorized():
                 self.send_json(401, {"error": "Требуется сопряжение"}); return
+            if route == "/api/subagents/action":
+                try:
+                    self.send_json(200, bridge.subagent_action(self.read_json(128000)))
+                except (ValueError, RpcError, BusyError) as exc:
+                    self.send_json(400, {"error": str(exc)})
+                except Exception as exc:
+                    self.send_json(503, {"error": str(exc)})
+                return
             if route.startswith("/api/adb/"):
                 try:
                     data = self.read_json(4096)
@@ -1711,6 +1838,13 @@ def main(argv: list[str] | None = None) -> None:
                 elif route == "/api/events":
                     query = parse_qs(parsed.query)
                     self.send_json(200, bridge.wait_event(query.get("cursor", [""])[0]))
+                elif route == "/api/subagents":
+                    self.send_json(200, bridge.subagents(thread_id))
+                elif route == "/api/subagents/history":
+                    query = parse_qs(parsed.query)
+                    agent_id = query.get("agentId", [""])[0]
+                    bridge.subagent_check(thread_id, agent_id)
+                    self.send_json(200, bridge.history(agent_id, query.get("before", [None])[0]))
                 elif route == "/api/projects": self.send_json(200, bridge.projects())
                 elif route == "/api/threads": self.send_json(200, {"threads": bridge.list_threads(limit=500),
                                                                     "selectedThreadId": bridge.selected_thread_id})
