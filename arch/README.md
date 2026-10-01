@@ -4,7 +4,7 @@
 
 ## Установка
 
-Скачайте `remotevibecode-agent-0.1.12-1-any.pkg.tar.zst` из [репозитория](https://github.com/wilmain-arch/RemoteVibecode/tree/main/releases), затем выполните:
+Скачайте `remotevibecode-agent-0.1.12-1-any.pkg.tar.zst` из [репозитория](https://github.com/wilmain-arch/RemoteVibecode/releases/latest), затем выполните:
 
 ```sh
 sudo pacman -U ./remotevibecode-agent-0.1.12-1-any.pkg.tar.zst
@@ -20,3 +20,5 @@ remotevibecode-agent
 Кнопка закрытия скрывает окно в системный трей; агент продолжает работу. Через меню значка можно открыть окно или завершить агент.
 
 Для пересборки пакета скачайте исходники и выполните `makepkg -si` в каталоге `arch/`. Пакет публикуется как файл для `pacman -U`; отдельного репозитория для установки через `pacman -S` пока нет.
+
+[Обновление](../docs/UPDATING.md) · [Диагностика](../docs/TROUBLESHOOTING.md)

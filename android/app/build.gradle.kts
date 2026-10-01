@@ -16,6 +16,17 @@ android {
         versionName = "0.9.16"
     }
 
+    signingConfigs {
+        getByName("debug") {
+            System.getenv("RV_ANDROID_KEYSTORE")?.let { keyPath ->
+                storeFile = file(keyPath)
+                storePassword = System.getenv("RV_ANDROID_STORE_PASSWORD")
+                keyAlias = System.getenv("RV_ANDROID_KEY_ALIAS")
+                keyPassword = System.getenv("RV_ANDROID_KEY_PASSWORD")
+            }
+        }
+    }
+
     flavorDimensions += "connection"
     productFlavors {
         create("personal") {

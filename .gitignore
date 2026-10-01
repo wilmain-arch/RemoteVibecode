@@ -16,3 +16,6 @@ arch/*.pkg.tar.zst
 .env
 *.env.local
 codex-phone-companion.service
+
+releases/*.apk
+releases/*.pkg.tar.zst

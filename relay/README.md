@@ -4,7 +4,7 @@
 
 ## Установка
 
-Скачайте `remotevibecode-relay_0.1.0_all.deb` из [общего релиза](https://github.com/wilmain-arch/RemoteVibecode/releases/tag/bundle-v0.2.0) и установите на сервере:
+Скачайте `remotevibecode-relay_0.1.0_all.deb` из [общего релиза](https://github.com/wilmain-arch/RemoteVibecode/releases/latest) и установите на сервере:
 
 ```sh
 sudo apt install ./remotevibecode-relay_0.1.0_all.deb
@@ -33,3 +33,5 @@ sudo systemctl restart remotevibecode-relay
 Ретранслятор передаёт данные телефона мосту без расшифровки; телефон проверяет TLS-сертификат моста по отпечатку из QR-кода. Отдельный сертификат сервера защищает соединения агента. Домашнему роутеру ПК проброс портов не нужен: агент сам подключается к серверу.
 
 Полный маршрут на реальном Windows-ПК и публичном сервере пока не проверен.
+
+[Обновление](../docs/UPDATING.md) · [Диагностика](../docs/TROUBLESHOOTING.md)

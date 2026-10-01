@@ -1,54 +1,147 @@
-name: Windows client and server relay release
+name: Сборка и выпуск комплекта
 
 on:
   push:
-    tags:
-      - 'bundle-v*'
+    branches: [main]
+    tags: ['bundle-v*']
+  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  windows-client:
+  metadata:
+    runs-on: ubuntu-latest
+    outputs:
+      android: ${{ steps.versions.outputs.android }}
+      agent: ${{ steps.versions.outputs.agent }}
+      relay: ${{ steps.versions.outputs.relay }}
+      bundle: ${{ steps.versions.outputs.bundle }}
+      androidCert: ${{ steps.versions.outputs.androidCert }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: versions
+        run: python3 scripts/release_metadata.py >> "$GITHUB_OUTPUT"
+      - name: Проверить ссылки инструкций
+        run: python3 scripts/check_docs.py
+      - name: Проверить тег комплекта
+        if: startsWith(github.ref, 'refs/tags/bundle-v')
+        env:
+          EXPECTED: bundle-v${{ steps.versions.outputs.bundle }}
+        run: test "$GITHUB_REF_NAME" = "$EXPECTED"
+
+  android:
+    needs: metadata
+    runs-on: ubuntu-latest
+    env:
+      KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      RV_ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      RV_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      RV_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Подготовить ключ подписи
+        shell: bash
+        run: |
+          if [[ -n "$KEYSTORE_BASE64" ]]; then
+            test -n "$RV_ANDROID_STORE_PASSWORD"
+            test -n "$RV_ANDROID_KEY_ALIAS"
+            test -n "$RV_ANDROID_KEY_PASSWORD"
+            printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/android.keystore"
+            chmod 600 "$RUNNER_TEMP/android.keystore"
+            echo "RV_ANDROID_KEYSTORE=$RUNNER_TEMP/android.keystore" >> "$GITHUB_ENV"
+          elif [[ "$GITHUB_REF" == refs/tags/bundle-v* ]]; then
+            echo 'Для публикации настройте Android signing secrets по docs/BUILDING.md'
+            exit 1
+          fi
+      - name: Собрать APK из исходников
+        run: ./android/gradlew -p android :app:assembleRelayDebug
+      - name: Проверить сертификат пользовательской сборки
+        if: env.KEYSTORE_BASE64 != ''
+        env:
+          EXPECTED_CERT: ${{ needs.metadata.outputs.androidCert }}
+        shell: bash
+        run: |
+          actual=$("$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs android/app/build/outputs/apk/relay/debug/app-relay-debug.apk | sed -n 's/Signer #1 certificate SHA-256 digest: //p')
+          test "$actual" = "$EXPECTED_CERT"
+      - name: Подготовить файл
+        run: |
+          mkdir -p dist
+          cp android/app/build/outputs/apk/relay/debug/app-relay-debug.apk dist/RemoteVibecode-${{ needs.metadata.outputs.android }}.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-build
+          path: dist/*.apk
+          if-no-files-found: error
+      - name: Удалить временный ключ
+        if: always()
+        run: rm -f "$RUNNER_TEMP/android.keystore"
+
+  arch:
+    needs: metadata
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - run: pacman -Syu --noconfirm git python
+      - uses: actions/checkout@v4
+      - name: Собрать пакет из текущего коммита
+        shell: bash
+        run: |
+          sed -i "s/#tag=arch-v\$pkgver/#commit=$GITHUB_SHA/" arch/PKGBUILD
+          useradd -m builder
+          chown -R builder .
+          su builder -c "cd '$GITHUB_WORKSPACE/arch' && makepkg --nodeps --noconfirm"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch-build
+          path: arch/*.pkg.tar.zst
+          if-no-files-found: error
+
+  windows:
+    if: startsWith(github.ref, 'refs/tags/bundle-v')
+    needs: metadata
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - name: Install build dependencies
-        run: python -m pip install -r agent/requirements-build.txt
-      - name: Build Windows client
+      - run: python -m pip install -r agent/requirements-build.txt
+      - name: Собрать EXE
         run: >-
           python -m PyInstaller --onefile --windowed --clean --noconfirm
           --paths . --hidden-import qrcode.image.pil --hidden-import pystray._win32
-          --icon agent/remotevibecode.ico
-          --add-data "agent/remotevibecode.ico;agent"
+          --icon agent/remotevibecode.ico --add-data "agent/remotevibecode.ico;agent"
           --name RemoteVibecodeAgent agent/windows_agent.py
       - uses: actions/upload-artifact@v4
         with:
-          name: remotevibecode-windows-client
+          name: windows-build
           path: dist/RemoteVibecodeAgent.exe
           if-no-files-found: error
 
-  server-relay:
+  relay:
+    needs: metadata
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build Debian package
-        run: ./relay/build-deb.sh 0.1.0
-      - name: Inspect Debian package
-        run: |
-          dpkg-deb --info dist/remotevibecode-relay_0.1.0_all.deb
-          dpkg-deb --contents dist/remotevibecode-relay_0.1.0_all.deb
+      - run: ./relay/build-deb.sh ${{ needs.metadata.outputs.relay }}
+      - run: dpkg-deb --info dist/*.deb
       - uses: actions/upload-artifact@v4
         with:
-          name: remotevibecode-server-relay
-          path: dist/remotevibecode-relay_0.1.0_all.deb
+          name: relay-build
+          path: dist/*.deb
           if-no-files-found: error
 
   release:
-    needs: [windows-client, server-relay]
+    if: startsWith(github.ref, 'refs/tags/bundle-v')
+    needs: [metadata, android, arch, windows, relay]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -56,29 +149,31 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: remotevibecode-windows-client
+          pattern: '*-build'
           path: release
-      - uses: actions/download-artifact@v4
-        with:
-          name: remotevibecode-server-relay
-          path: release
-      - name: Include Android app
-        run: cp releases/RemoteVibecode-0.9.16.apk release/
-      - name: Include Arch agent
-        run: cp releases/remotevibecode-agent-0.1.12-1-any.pkg.tar.zst release/
-      - name: Generate checksums
-        run: cd release && sha256sum RemoteVibecodeAgent.exe remotevibecode-relay_0.1.0_all.deb remotevibecode-agent-0.1.12-1-any.pkg.tar.zst RemoteVibecode-0.9.16.apk > SHA256SUMS.txt
-      - name: Publish release
+          merge-multiple: true
+      - name: Сформировать суммы и состав комплекта
+        run: |
+          cp LICENSE release/LICENSE
+          cp third_party/lucide/LICENSE release/LUCIDE-LICENSE
+          cd release
+          sha256sum *.apk *.exe *.deb *.pkg.tar.zst LICENSE LUCIDE-LICENSE > SHA256SUMS.txt
+          cd ..
+          python3 - <<'PYTHON'
+          import json
+          from pathlib import Path
+          v = json.loads(Path('release.json').read_text())
+          rows = '\n'.join(f'| {label} | {v[key]} |' for key,label in [('android','Android'),('agent','Агент ПК'),('relay','Ретранслятор')])
+          notes = Path('RELEASE_NOTES.md').read_text()
+          notes += '\n## Состав комплекта\n\n| Компонент | Версия |\n| --- | --- |\n' + rows
+          notes += '\n\n[Порядок обновления](https://github.com/wilmain-arch/RemoteVibecode/blob/main/docs/UPDATING.md)\n'
+          Path('release-notes.md').write_text(notes)
+          PYTHON
+      - name: Опубликовать
         env:
           GH_TOKEN: ${{ github.token }}
         run: >-
-          gh release create "${{ github.ref_name }}"
-          release/RemoteVibecodeAgent.exe
-          release/remotevibecode-relay_0.1.0_all.deb
-          release/remotevibecode-agent-0.1.12-1-any.pkg.tar.zst
-          release/RemoteVibecode-0.9.16.apk
-          release/SHA256SUMS.txt
-          --repo "${{ github.repository }}"
-          --title "RemoteVibecode ${{ github.ref_name }}"
-          --notes-file RELEASE_NOTES.md
-          --latest
+          gh release create "$GITHUB_REF_NAME" release/*
+          --repo "$GITHUB_REPOSITORY"
+          --title "RemoteVibecode ${{ needs.metadata.outputs.bundle }}"
+          --notes-file release-notes.md --latest

@@ -15,6 +15,7 @@ mkdir -p "$OUTPUT_DIR" "$WORK_DIR/control" \
     "$WORK_DIR/data/etc/default" \
     "$WORK_DIR/data/usr/share/doc/remotevibecode-relay"
 
+install -m 0644 "$PROJECT_DIR/LICENSE" "$WORK_DIR/data/usr/share/doc/remotevibecode-relay/copyright"
 install -m 0644 "$RELAY_DIR/server.py" "$WORK_DIR/data/usr/lib/remotevibecode/relay.py"
 install -m 0644 "$RELAY_DIR/remotevibecode-relay.service" \
     "$WORK_DIR/data/usr/lib/systemd/system/remotevibecode-relay.service"

@@ -5,11 +5,11 @@ pkgrel=1
 pkgdesc='Графический агент RemoteVibecode для подключения ПК к своему ретранслятору'
 arch=('any')
 url='https://github.com/wilmain-arch/RemoteVibecode'
-license=('LicenseRef-Unspecified')
+license=('MIT')
 depends=('python' 'python-cryptography' 'python-pillow' 'python-qrcode' 'python-pystray' 'tk' 'fontconfig' 'hicolor-icon-theme')
 makedepends=('git')
 source=("remotevibecode-source::git+https://github.com/wilmain-arch/RemoteVibecode.git#tag=arch-v$pkgver" 'LICENSE')
-sha256sums=('SKIP' 'afcd093d88c9d39b81948032f73ab8a5baabeeb2c9fd44989c9e6826e9d1f54d')
+sha256sums=('SKIP' '77657ae5d4913dce589fc490aa382c84027ca729806797cc7279717d42cba062')
 
 package() {
     local appdir="$pkgdir/usr/lib/remotevibecode-agent"

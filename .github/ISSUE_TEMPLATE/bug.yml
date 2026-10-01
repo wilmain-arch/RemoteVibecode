@@ -1,0 +1,23 @@
+name: Ошибка
+description: Сообщить о проблеме
+title: ""
+body:
+  - type: textarea
+    id: versions
+    attributes:
+      label: Версии и устройства
+      description: APK, агент, Codex, ОС ПК/сервера и Android.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Как воспроизвести
+      description: Последовательность действий, ожидаемый и фактический результат.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Ошибка или снимок экрана
+      description: Не прикладывайте секреты, токены, QR привязки или личную переписку.
