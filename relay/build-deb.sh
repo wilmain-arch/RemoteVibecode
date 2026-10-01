@@ -3,7 +3,7 @@ set -euo pipefail
 
 RELAY_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
 PROJECT_DIR="$(dirname -- "$RELAY_DIR")"
-VERSION="${1:-0.1.0}"
+VERSION="${1:-0.1.1}"
 OUTPUT_DIR="$PROJECT_DIR/dist"
 PACKAGE="$OUTPUT_DIR/remotevibecode-relay_${VERSION}_all.deb"
 WORK_DIR="$(mktemp -d)"

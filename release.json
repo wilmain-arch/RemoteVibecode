@@ -1,8 +1,8 @@
 {
-  "bundle": "0.3.8",
-  "android": "0.9.16",
-  "androidCode": 31,
-  "agent": "0.1.12",
-  "relay": "0.1.0",
+  "bundle": "0.3.9",
+  "android": "0.9.17",
+  "androidCode": 32,
+  "agent": "0.1.13",
+  "relay": "0.1.1",
   "androidCert": "66a38429e10bc19ff4b1080d5754439cfead260f309042373b5f0a65acf8c63d"
 }

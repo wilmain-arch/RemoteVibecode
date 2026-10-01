@@ -4,10 +4,10 @@
 
 ## Установка
 
-Скачайте `remotevibecode-relay_0.1.0_all.deb` из [общего релиза](https://github.com/wilmain-arch/RemoteVibecode/releases/latest) и установите на сервере:
+Скачайте `remotevibecode-relay_0.1.1_all.deb` из [общего релиза](https://github.com/wilmain-arch/RemoteVibecode/releases/latest) и установите на сервере:
 
 ```sh
-sudo apt install ./remotevibecode-relay_0.1.0_all.deb
+sudo apt install ./remotevibecode-relay_0.1.1_all.deb
 sudo systemctl status remotevibecode-relay
 ```
 
