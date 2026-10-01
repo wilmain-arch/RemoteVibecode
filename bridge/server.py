@@ -7,7 +7,7 @@ import argparse
 import codecs
 import base64
 from io import BytesIO
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import hashlib
 import hmac
 import ipaddress
@@ -488,7 +488,8 @@ class Bridge:
         action = data.get("action")
         if action not in ("send", "interrupt"):
             raise ValueError("Неизвестное действие")
-        with self.rpc_session() as rpc:
+        # Send paths always acquire send_lock before rpc_lock; interrupt needs only RPC.
+        with (self.send_lock if action == "send" else nullcontext()), self.rpc_session() as rpc:
             thread = rpc.call("thread/read", {"threadId": agent_id, "includeTurns": True})["thread"]
             active = next((turn for turn in reversed(thread.get("turns", []))
                            if turn.get("status") == "inProgress"), None)
@@ -504,19 +505,18 @@ class Bridge:
             if not agent["canSend"] or thread.get("canAcceptDirectInput") is False:
                 raise ValueError("Desktop не разрешает прямой ввод этому агенту")
             if active:
-                with self.send_lock:
-                    if time.monotonic() < self.update_until:
-                        raise ValueError("Агент ПК устанавливает обновление")
-                    if message_id in self.sent_messages:
-                        return self.sent_messages[message_id]
-                    result = rpc.call("turn/steer", {"threadId": agent_id,
-                        "expectedTurnId": active["id"], "clientUserMessageId": message_id,
-                        "input": [{"type": "text", "text": text.strip()}]})
-                    response = {"accepted": True, "message": "Уточнение отправлено", "turnId": result.get("turnId")}
-                    with self.state_lock:
-                        self.sent_messages[message_id] = response
-                        self._save_state()
-                    return response
+                if time.monotonic() < self.update_until:
+                    raise ValueError("Агент ПК устанавливает обновление")
+                if message_id in self.sent_messages:
+                    return self.sent_messages[message_id]
+                result = rpc.call("turn/steer", {"threadId": agent_id,
+                    "expectedTurnId": active["id"], "clientUserMessageId": message_id,
+                    "input": [{"type": "text", "text": text.strip()}]})
+                response = {"accepted": True, "message": "Уточнение отправлено", "turnId": result.get("turnId")}
+                with self.state_lock:
+                    self.sent_messages[message_id] = response
+                    self._save_state()
+                return response
         self.send(text, [], message_id, agent_id)
         return {"accepted": True, "message": "Задача отправлена"}
 

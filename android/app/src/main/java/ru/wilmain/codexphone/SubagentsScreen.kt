@@ -3,6 +3,7 @@ package ru.wilmain.codexphone
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -24,6 +25,8 @@ import java.util.UUID
 
 private data class Subagent(val id: String, val parentId: String, val name: String,
     val model: String, val role: String, val task: String, val status: String, val message: String, val canSend: Boolean)
+
+private data class SubagentDraft(val text: String = "", val messageId: String = UUID.randomUUID().toString())
 
 private fun agentStatus(status: String) = when (status) {
     "running", "active" -> "Работает"
@@ -51,8 +54,11 @@ internal fun SubagentsScreen(threadId: String, onClose: () -> Unit,
     var cursor by remember(selectedId) { mutableStateOf<String?>(null) }
     var historyReady by remember(selectedId) { mutableStateOf(false) }
     var historyBusy by remember(selectedId) { mutableStateOf(false) }
-    var input by remember(threadId, selectedId) { mutableStateOf("") }
-    var messageId by remember(threadId, selectedId) { mutableStateOf(UUID.randomUUID().toString()) }
+    val drafts = remember(threadId) { mutableStateMapOf<String, SubagentDraft>() }
+    val emptyDraft = remember(threadId, selectedId) { SubagentDraft() }
+    val draft = selectedId?.let { drafts[it] } ?: emptyDraft
+    val input = draft.text
+    val inputLength = input.codePointCount(0, input.length)
     var actionBusy by remember { mutableStateOf(false) }
     var confirmStop by remember { mutableStateOf(false) }
     var refresh by remember { mutableIntStateOf(0) }
@@ -76,19 +82,22 @@ internal fun SubagentsScreen(threadId: String, onClose: () -> Unit,
                     val result = request("subagents/history?$rootQuery&agentId=${Uri.encode(id)}", null)
                     val rows = result.optJSONArray("turns")
                     val recent = (0 until (rows?.length() ?: 0)).mapNotNull { rows?.optJSONObject(it) }
-                    val nearBottom = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index?.let {
-                        it >= listState.layoutInfo.totalItemsCount - 3
-                    } ?: true
+                    val nearBottom = !historyReady || !listState.canScrollForward
                     val freshIds = recent.map { it.optString("id") }.toSet()
                     val overlap = history.indexOfFirst { it.optString("id") in freshIds }
-                    history = (if (overlap >= 0) history.take(overlap) else emptyList()) + recent
-                    if (!historyReady) cursor = result.optString("nextBefore").takeIf {
+                    val updatedHistory = (if (overlap >= 0) history.take(overlap) else emptyList()) + recent
+                    val contentChanged = history.map { it.toString() } != updatedHistory.map { it.toString() }
+                    history = updatedHistory
+                    if (!historyReady || overlap < 0) cursor = result.optString("nextBefore").takeIf {
                         result.optBoolean("hasMore") && it.isNotBlank() && it != "null"
                     }
                     historyReady = true
-                    if (nearBottom && history.isNotEmpty()) {
+                    if (contentChanged && nearBottom && history.isNotEmpty() && !listState.isScrollInProgress) {
                         withFrameNanos { }
-                        listState.scrollToItem(history.size + 1)
+                        if (!listState.isScrollInProgress) {
+                            listState.scrollToItem(history.size + 1)
+                            listState.scroll { scrollBy(100_000f) }
+                        }
                     }
                 }
                 error = ""
@@ -101,14 +110,15 @@ internal fun SubagentsScreen(threadId: String, onClose: () -> Unit,
     fun act(action: String) {
         val id = selectedId ?: return
         if (actionBusy) return
+        val outgoingDraft = draft
         actionBusy = true
         scope.launch {
             try {
                 val payload = JSONObject().put("threadId", threadId).put("agentId", id)
-                    .put("action", action).put("text", input).put("messageId", messageId)
+                    .put("action", action).put("text", outgoingDraft.text).put("messageId", outgoingDraft.messageId)
                 val result = request("subagents/action", payload)
                 notice = result.optString("message")
-                if (action == "send") { input = ""; messageId = UUID.randomUUID().toString() }
+                if (action == "send") drafts.remove(id)
                 refresh++
             } catch (cancel: CancellationException) { throw cancel }
             catch (failure: Exception) { notice = "Не удалось выполнить: ${failure.message}" }
@@ -126,8 +136,9 @@ internal fun SubagentsScreen(threadId: String, onClose: () -> Unit,
                     Text(selected?.name ?: "Субагенты", style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(if (selectedId == null) "${agents.count { it.status == "running" }} работают · ${agents.size} всего"
-                        else selected?.let { agentStatus(it.status) } ?: "Загрузка",
+                        else selected?.let { agentStatus(it.status) + if (it.model.isBlank()) "" else " · ${it.model}" } ?: "Загрузка",
                         style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 TextButton(onClick = { refresh++ }, modifier = Modifier.size(48.dp)) {
@@ -140,8 +151,15 @@ internal fun SubagentsScreen(threadId: String, onClose: () -> Unit,
                 if (notice.isNotBlank()) Text(notice, style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.padding(bottom = 8.dp))
                 if (selected?.canSend == true) {
-                    TextField(input, { input = it; messageId = UUID.randomUUID().toString() },
+                    TextField(input, { value ->
+                        val id = selectedId ?: return@TextField
+                        val text = if (value.codePointCount(0, value.length) > 32000)
+                            value.substring(0, value.offsetByCodePoints(0, 32000)) else value
+                        if (text != input) drafts[id] = SubagentDraft(text)
+                    },
                         modifier = Modifier.fillMaxWidth(), placeholder = { Text("Уточнение или новая задача") },
+                        supportingText = { Text("$inputLength / 32 000", Modifier.fillMaxWidth(),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.End) },
                         maxLines = 4, enabled = !actionBusy, shape = RoundedCornerShape(18.dp),
                         colors = TextFieldDefaults.colors(
                             focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
@@ -242,7 +260,7 @@ internal fun SubagentsScreen(threadId: String, onClose: () -> Unit,
                         MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.background) {
                         Column(Modifier.fillMaxWidth().padding(if (role == "user") 14.dp else 4.dp)) {
                             Text(when(role) { "user" -> "Задача / уточнение"; "process" -> "Ход работы"
-                                "system" -> "Событие"; else -> selected?.name ?: "Агент" },
+                                "system" -> "Событие"; "outcome" -> "Итог работы"; else -> selected?.name ?: "Агент" },
                                 style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             SelectionContainer { MarkdownContent(row.optString("text"), compact = role == "system" || role == "process") }
                             val activities = row.optJSONArray("activities")

@@ -2,6 +2,11 @@ name: Windows agent EXE
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - 'agent/**'
+      - 'bridge/**'
+      - '.github/workflows/windows-agent.yml'
   push:
     branches: [main]
     paths:
