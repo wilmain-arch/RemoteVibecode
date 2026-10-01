@@ -23,7 +23,7 @@ import org.json.JSONObject
 import java.util.UUID
 
 private data class Subagent(val id: String, val parentId: String, val name: String,
-    val role: String, val task: String, val status: String, val message: String, val canSend: Boolean)
+    val model: String, val role: String, val task: String, val status: String, val message: String, val canSend: Boolean)
 
 private fun agentStatus(status: String) = when (status) {
     "running", "active" -> "Работает"
@@ -68,7 +68,7 @@ internal fun SubagentsScreen(threadId: String, onClose: () -> Unit,
                 agents = (0 until (array?.length() ?: 0)).mapNotNull { index ->
                     val item = array?.optJSONObject(index) ?: return@mapNotNull null
                     Subagent(item.optString("id"), item.optString("parentId"), item.optString("name"),
-                        item.optString("role"), item.optString("task"), item.optString("status"),
+                        item.optString("model").takeUnless { it == "null" } ?: "", item.optString("role"), item.optString("task"), item.optString("status"),
                         item.optString("message"), item.optBoolean("canSend"))
                 }
                 val id = selectedId
@@ -186,8 +186,16 @@ internal fun SubagentsScreen(threadId: String, onClose: () -> Unit,
                         Column(Modifier.fillMaxWidth().padding(16.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 UiGlyph(UiIcon.Agents, size = 21.dp)
-                                Text(agent.name, Modifier.weight(1f).padding(horizontal = 10.dp),
-                                    fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Row(Modifier.weight(1f).padding(horizontal = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically) {
+                                    Text(agent.name, Modifier.weight(1f, fill = false),
+                                        fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    if (agent.model.isNotBlank()) Text(agent.model,
+                                        Modifier.padding(start = 8.dp),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
                                 UiGlyph(UiIcon.ChevronRight, "Открыть чат агента", 20.dp)
                             }
                             Text(agentStatus(agent.status) + if (agent.role.isBlank()) "" else " · ${agent.role}",

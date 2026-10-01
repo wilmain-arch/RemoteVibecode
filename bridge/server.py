@@ -433,6 +433,7 @@ class Bridge:
                     status = (thread.get("status") or {}).get("type", "unknown")
                     agents.append({"id": agent_id, "parentId": thread.get("parentThreadId"),
                                    "name": thread.get("agentNickname") or thread.get("name") or "Субагент",
+                                   "model": thread.get("model") or "",
                                    "role": thread.get("agentRole") or "",
                                    "task": hint.get("task") or thread.get("preview") or "",
                                    "status": "running" if status == "active" else (
@@ -443,6 +444,13 @@ class Bridge:
                 cursor = result.get("nextCursor")
                 if not cursor or not result.get("data") or len(agents) >= 500:
                     break
+            for agent in agents:
+                if not agent["model"]:
+                    try:
+                        detail = rpc.call("thread/read", {"threadId": agent["id"], "includeTurns": False})["thread"]
+                        agent["model"] = detail.get("model") or ""
+                    except RpcError:
+                        pass
             known_ids = {agent["id"] for agent in agents}
             for agent_id, hint in hints.items():
                 if agent_id in known_ids:
@@ -456,6 +464,7 @@ class Bridge:
                 status = (thread.get("status") or {}).get("type", "unknown")
                 agents.append({"id": agent_id, "parentId": root_id,
                                "name": thread.get("agentNickname") or "Субагент",
+                               "model": thread.get("model") or "",
                                "role": thread.get("agentRole") or "",
                                "task": hint.get("task") or thread.get("preview") or "",
                                "status": "running" if status == "active" else (
