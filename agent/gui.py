@@ -170,6 +170,9 @@ class AgentWindow:
             if event[0] == "update":
                 _, kind, value = event
                 if kind == "checked":
+                    previous_hash = (self.update_info or {}).get('info', {}).get('sha256')
+                    if previous_hash != value['info']['sha256']:
+                        self.update_file = None
                     self.update_info = value
                     self.update_busy = False
                     self.update_checked = datetime.now().strftime("%d.%m.%Y %H:%M")
@@ -433,7 +436,7 @@ class AgentWindow:
         threading.Thread(target=release,daemon=True).start()
 
     def install_update(self):
-        if self.update_waiting or self.update_file is None: return
+        if self.update_busy or self.update_downloading or self.update_waiting or self.update_file is None: return
         self.update_waiting = True
         self.update_cancel.clear()
         self.update_message = "Проверяю задачи перед установкой…"
