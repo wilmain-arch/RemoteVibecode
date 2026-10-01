@@ -829,6 +829,16 @@ class Bridge:
                               "text": "Codex работает…", "time": started_at,
                               "turnId": turn_id, "steps": 0})
             turns.extend(messages)
+            outcome = turn.get("status")
+            outcome_text = {
+                "completed": "Работа Codex завершена",
+                "interrupted": "Работа Codex прервана",
+                "failed": "Работа Codex завершилась с ошибкой",
+            }.get(outcome)
+            if outcome_text:
+                turns.append({"id": f"{turn_id}:outcome", "role": "outcome",
+                              "text": outcome_text, "time": completed_at or started_at,
+                              "turnId": turn_id})
         end = next((index for index, item in enumerate(turns) if item["id"] == before), len(turns)) if before else len(turns)
         start = max(0, end - limit)
         page = turns[start:end]

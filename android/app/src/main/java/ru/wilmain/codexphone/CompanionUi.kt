@@ -577,6 +577,21 @@ internal fun CompanionUi(
                                     }
                                 }
                             }
+                            "outcome" -> Row(Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                horizontalArrangement = Arrangement.Center,
+                                verticalAlignment = Alignment.CenterVertically) {
+                                val failed = line.text.contains("ошибкой")
+                                val completed = line.text == "Работа Codex завершена"
+                                UiGlyph(if (completed) UiIcon.CircleCheck else UiIcon.Close,
+                                    size = 16.dp,
+                                    tint = if (failed) MaterialTheme.colorScheme.error
+                                        else if (completed) MaterialTheme.colorScheme.secondary
+                                        else MaterialTheme.colorScheme.onSurfaceVariant)
+                                Spacer(Modifier.width(7.dp))
+                                Text(line.text, style = MaterialTheme.typography.labelMedium,
+                                    color = if (failed) MaterialTheme.colorScheme.error
+                                        else MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
                             else -> Column {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Surface(shape = RoundedCornerShape(8.dp),
