@@ -31,7 +31,7 @@ def _shell(image: Image.Image, draw: ImageDraw.ImageDraw, page: str, icon_path: 
     image.paste(logo, (43, 70), logo)
     draw.text((138, 94), "RemoteVibecode", font=_font(18, True), fill=WHITE)
     for index, (name, symbol) in enumerate((("Обзор", "home"), ("Устройства", "phone"),
-                                             ("Подключение", "link"), ("Настройки", "gear"))):
+                                             ("Подключение", "link"), ("Настройки", "gear"), ("Обновления", "update"))):
         top = 183 + index * 72
         selected = name == page
         if selected:
@@ -54,6 +54,9 @@ def _shell(image: Image.Image, draw: ImageDraw.ImageDraw, page: str, icon_path: 
             draw.arc((icon_x, icon_y + 8, icon_x + 20, icon_y + 28), 45, 310, fill=color, width=3)
             draw.arc((icon_x + 10, icon_y, icon_x + 30, icon_y + 20), 225, 130, fill=color, width=3)
             draw.line((icon_x + 11, icon_y + 19, icon_x + 20, icon_y + 10), fill=color, width=3)
+        elif symbol == "update":
+            draw.arc((icon_x, icon_y, icon_x + 29, icon_y + 29), 40, 330, fill=color, width=3)
+            draw.line([(icon_x + 27, icon_y), (icon_x + 27, icon_y + 10), (icon_x + 17, icon_y + 10)], fill=color, width=3)
         else:
             draw.ellipse((icon_x + 3, icon_y + 3, icon_x + 27, icon_y + 27), outline=color, width=3)
             draw.ellipse((icon_x + 11, icon_y + 11, icon_x + 19, icon_y + 19), outline=color, width=3)
@@ -326,4 +329,45 @@ def render_page(*, page: str, configured: bool, paired: bool, relay_ready: bool,
         action((378, 778, 624, 837), "Сохранить", True)
         if error or status:
             txt(650, 793, (error or status)[:74], 16, "#ffc0bf" if error else GREEN)
+    return image
+
+
+def render_updates(*, version: str, message: str, available: str = '', downloading: bool = False,
+                   progress: int = 0, ready: bool = False, waiting: bool = False,
+                   checked: str = '', notes: str = '') -> Image.Image:
+    import textwrap
+    image = Image.new('RGB', (WIDTH, HEIGHT), BG)
+    draw = ImageDraw.Draw(image)
+    _shell(image, draw, 'Обновления', Path(__file__).with_name('remotevibecode.ico'))
+    def txt(x,y,text,size=20,color=WHITE,bold=False):
+        draw.text((x,y),text,font=_font(size,bold),fill=color)
+    def button(box,label,primary=False):
+        draw.rounded_rectangle(box,radius=16,fill=BLUE if primary else INNER,outline=EDGE)
+        txt(box[0]+20,box[1]+15,label,18,bold=primary)
+    txt(375,52,'Обновления',54,bold=True)
+    txt(378,128,f'RemoteVibecode {version}',23,MUTED)
+    draw.rounded_rectangle((347,183,1646,486),radius=22,fill=CARD,outline=EDGE)
+    txt(381,214,'Доступна версия ' + available if available else 'Обновления из GitHub Releases',27,bold=True)
+    for i,line in enumerate(textwrap.wrap(message or 'Проверяем автоматически раз в сутки.',width=95)[:2]):
+        txt(381,268+i*27,line,19,GREEN if ready else MUTED)
+    if checked: txt(381,326,'Проверено: '+checked,16,DIM)
+    if downloading:
+        draw.rounded_rectangle((381,353,1607,362),radius=4,fill=INNER)
+        draw.rounded_rectangle((381,353,381+max(2,int(1226*progress/100)),362),radius=4,fill=CYAN)
+    button((378,395,655,456),'Проверить обновления')
+    if available and not downloading and not waiting:
+        button((680,395,970,456),'Установить' if ready else 'Скачать обновление',True)
+    if downloading or waiting:
+        button((680,395,970,456),'Отменить ожидание' if waiting else 'Отменить скачивание')
+    if available: button((995,395,1310,456),'Все изменения на GitHub')
+    draw.rounded_rectangle((347,510,1646,888),radius=22,fill=CARD,outline=EDGE)
+    txt(381,539,'Что изменилось' if notes else 'Как проходит обновление',26,bold=True)
+    text = notes or ('Скачивание не прерывает работу чата. Установка ждёт завершения задач и очереди сообщений.\n'
+        'Windows: агент перезапустится; при неудачном запуске вернётся прежний EXE.\n'
+        'Arch: установка через pacman с системным запросом прав администратора.\n'
+        'Привязка телефона, настройки и файлы сохраняются.')
+    lines = []
+    for line in text.splitlines():
+        lines.extend(textwrap.wrap(line.lstrip('#-* '),width=108) or [''])
+    for i,line in enumerate(lines[:10]): txt(381,589+i*27,line,18,MUTED)
     return image

@@ -30,7 +30,7 @@ jobs:
           --paths . --hidden-import qrcode.image.pil --hidden-import pystray._win32
           --icon agent/remotevibecode.ico
           --add-data "agent/remotevibecode.ico;agent"
-          --name RemoteVibecodeAgent agent/windows_agent.py
+          --add-data "agent/update-public.pem;agent" --name RemoteVibecodeAgent agent/windows_agent.py
       - name: Upload executable
         uses: actions/upload-artifact@v4
         with:

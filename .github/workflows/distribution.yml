@@ -122,7 +122,7 @@ jobs:
           python -m PyInstaller --onefile --windowed --clean --noconfirm
           --paths . --hidden-import qrcode.image.pil --hidden-import pystray._win32
           --icon agent/remotevibecode.ico --add-data "agent/remotevibecode.ico;agent"
-          --name RemoteVibecodeAgent agent/windows_agent.py
+          --add-data "agent/update-public.pem;agent" --name RemoteVibecodeAgent agent/windows_agent.py
       - uses: actions/upload-artifact@v4
         with:
           name: windows-build
@@ -172,6 +172,19 @@ jobs:
           notes += '\n\n[Порядок обновления](https://github.com/wilmain-arch/RemoteVibecode/blob/main/docs/UPDATING.md)\n'
           Path('release-notes.md').write_text(notes)
           PYTHON
+      - name: Подписать манифест обновлений
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        shell: bash
+        run: |
+          test -n "$UPDATE_SIGNING_KEY"
+          keyfile="$RUNNER_TEMP/update-signing.pem"
+          trap 'rm -f "$keyfile"' EXIT
+          printf '%s' "$UPDATE_SIGNING_KEY" > "$keyfile"
+          chmod 600 "$keyfile"
+          python3 scripts/build_update_manifest.py release --key "$keyfile"
+          cd release
+          sha256sum update.json update.json.sig >> SHA256SUMS.txt
       - name: Опубликовать
         env:
           GH_TOKEN: ${{ github.token }}

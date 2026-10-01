@@ -1,6 +1,6 @@
 # Android-приложение RemoteVibecode
 
-Скачайте `RemoteVibecode-0.9.17.apk` из [последнего релиза](https://github.com/wilmain-arch/RemoteVibecode/releases/latest). Приложение подключается через ваш ретранслятор. Идентификатор `ru.wilmain.codexphone.relay` сохранён, поэтому новая APK обновляет прежнюю relay-сборку без потери привязки.
+Скачайте `RemoteVibecode-0.10.0.apk` из [последнего релиза](https://github.com/wilmain-arch/RemoteVibecode/releases/latest). Приложение подключается через ваш ретранслятор. Идентификатор `ru.wilmain.codexphone.relay` сохранён, поэтому новая APK обновляет прежнюю relay-сборку без потери привязки.
 
 1. Установите серверный пакет `remotevibecode-relay` на собственном сервере и
    откройте TCP-порты 8765, 8766 и 8767 (либо порты из его конфигурации).
@@ -23,7 +23,7 @@ APK подписан отладочным ключом проекта. При о
 Сборка исходников: `./gradlew :app:assembleRelayDebug --offline` в каталоге
 `android/`. Артефакт появится в
 `app/build/outputs/apk/relay/debug/app-relay-debug.apk`. В релизе файл называется
-`RemoteVibecode-0.9.17.apk`.
+`RemoteVibecode-0.10.0.apk`.
 
 ## Расход задачи и сброс лимитов
 

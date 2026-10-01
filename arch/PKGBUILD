@@ -1,12 +1,12 @@
 # Maintainer: wilmain <https://github.com/wilmain-arch>
 pkgname=remotevibecode-agent
-pkgver=0.1.13
+pkgver=0.2.0
 pkgrel=1
 pkgdesc='Графический агент RemoteVibecode для подключения ПК к своему ретранслятору'
 arch=('any')
 url='https://github.com/wilmain-arch/RemoteVibecode'
 license=('MIT')
-depends=('python' 'python-cryptography' 'python-pillow' 'python-qrcode' 'python-pystray' 'tk' 'fontconfig' 'hicolor-icon-theme')
+depends=('python' 'python-cryptography' 'python-pillow' 'python-qrcode' 'python-pystray' 'tk' 'fontconfig' 'hicolor-icon-theme' 'polkit')
 makedepends=('git')
 source=("remotevibecode-source::git+https://github.com/wilmain-arch/RemoteVibecode.git#tag=arch-v$pkgver" 'LICENSE')
 sha256sums=('SKIP' '77657ae5d4913dce589fc490aa382c84027ca729806797cc7279717d42cba062')
@@ -14,6 +14,8 @@ sha256sums=('SKIP' '77657ae5d4913dce589fc490aa382c84027ca729806797cc7279717d42cb
 package() {
     local appdir="$pkgdir/usr/lib/remotevibecode-agent"
     install -Dm644 "$srcdir/remotevibecode-source/agent/windows_agent.py" "$appdir/agent/windows_agent.py"
+    install -Dm644 "$srcdir/remotevibecode-source/agent/updates.py" "$appdir/agent/updates.py"
+    install -Dm644 "$srcdir/remotevibecode-source/agent/update-public.pem" "$appdir/agent/update-public.pem"
     install -Dm644 "$srcdir/remotevibecode-source/agent/gui.py" "$appdir/agent/gui.py"
     install -Dm644 "$srcdir/remotevibecode-source/agent/dashboard.py" "$appdir/agent/dashboard.py"
     install -Dm644 "$srcdir/remotevibecode-source/agent/remotevibecode.ico" "$appdir/agent/remotevibecode.ico"

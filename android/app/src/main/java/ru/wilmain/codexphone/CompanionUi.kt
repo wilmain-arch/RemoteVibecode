@@ -154,6 +154,8 @@ internal fun fileSize(size: Long): String = when {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun CompanionUi(
+    onUpdates: () -> Unit,
+    updateAvailable: Boolean,
     paired: Boolean,
     relayOnly: Boolean,
     themeMode: String,
@@ -311,6 +313,7 @@ internal fun CompanionUi(
             onRefreshCatalog = onRefreshCatalog,
             onRefreshLimits = onRefreshLimits,
             onResetLimits = onResetLimits, resetMessage = resetMessage, resetLoading = resetLoading, resetPending = resetPending,
+            onUpdates = onUpdates, updateAvailable = updateAvailable,
             onDevices = { projectsOpen = false; devicesOpen = true },
             onDisconnect = { disconnectDialog = true },
         )
@@ -349,7 +352,11 @@ internal fun CompanionUi(
                     }, modifier = Modifier.size(48.dp).semantics { contentDescription = "Проекты и чаты" }) {
                         UiGlyph(UiIcon.Menu, size = 22.dp)
                     } },
-                    actions = { if (paired) {
+                    actions = {
+                        if (!paired) TextButton(onClick = onUpdates) {
+                            Text(if (updateAvailable) "Есть обновление" else "Обновления")
+                        }
+                        if (paired) {
                         TextButton(onClick = { filesOpen = true; onBrowseWorkspace(""); onFetchFiles() },
                             modifier = Modifier.size(48.dp).semantics { contentDescription = "Файлы проекта" }) {
                             UiGlyph(UiIcon.Files, size = 22.dp)

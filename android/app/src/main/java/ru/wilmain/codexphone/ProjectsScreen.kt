@@ -59,6 +59,7 @@ internal fun ProjectsScreen(
     onNewChat: (String?) -> Unit, onRefreshCatalog: () -> Unit,
     onRefreshLimits: () -> Unit,
     onResetLimits: (String) -> Unit, resetMessage: String, resetLoading: Boolean, resetPending: Boolean,
+    onUpdates: () -> Unit, updateAvailable: Boolean,
     onDevices: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
@@ -166,7 +167,8 @@ internal fun ProjectsScreen(
                         .semantics { contentDescription = "Обновить список" }) {
                         UiGlyph(UiIcon.Refresh, size = 20.dp)
                     }
-                    TextButton(onClick = onDevices) { Text("Устройства ADB") }
+                    TextButton(onClick = onUpdates) { Text(if (updateAvailable) "Обновить приложение" else "Обновления") }
+                    TextButton(onClick = onDevices) { Text("ADB") }
                     TextButton(onClick = onDisconnect) { Text("Отключить") }
                 }
             }

@@ -232,6 +232,14 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
     val prefs = remember { context.getSharedPreferences("companion", Context.MODE_PRIVATE) }
     var themeMode by remember { mutableStateOf(prefs.getString("themeMode", "system") ?: "system") }
     val scope = rememberCoroutineScope()
+    val updates = remember { AppUpdates(context.applicationContext, scope) }
+    var updatesOpen by remember { mutableStateOf(false) }
+    LaunchedEffect(updates) {
+        while (true) {
+            updates.check(manual = false)
+            delay(3_600_000)
+        }
+    }
     var certificatePin by remember { mutableStateOf(prefs.getString("certificatePin", "") ?: "") }
     val client = remember(certificatePin) { pinnedClient(certificatePin) }
     var host by remember { mutableStateOf(prefs.getString("host", "") ?: "") }
@@ -969,7 +977,10 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
         }
     }
     MaterialTheme(colorScheme = if (darkTheme) darkPalette else lightPalette) {
-        CompanionUi(
+        if (updatesOpen) UpdatesScreen(updates, onClose = { updatesOpen = false })
+        else CompanionUi(
+            onUpdates = { updatesOpen = true },
+            updateAvailable = updates.update != null,
             themeMode = themeMode,
             onThemeMode = { value ->
                 themeMode = value

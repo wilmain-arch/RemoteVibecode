@@ -353,11 +353,17 @@ def main() -> None:
     parser.add_argument("--setup", action="store_true")
     parser.add_argument("--install-autostart", action="store_true")
     parser.add_argument("--remove-autostart", action="store_true")
+    parser.add_argument("--apply-update", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--update-ready", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--cli", action="store_true", help="Запустить без графического интерфейса")
     args = parser.parse_args()
+    if args.apply_update:
+        from agent.updates import apply
+        apply(args.apply_update)
+        return
     if not args.cli and not (args.setup or args.install_autostart or args.remove_autostart):
         from agent.gui import launch
-        launch(args.config)
+        launch(args.config, args.update_ready)
         return
     if args.setup or not args.config.is_file():
         setup(args.config)
