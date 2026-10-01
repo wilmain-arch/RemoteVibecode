@@ -52,14 +52,14 @@ class AgentWindow:
             self.update_message = cached.get("message", "")
             if self.update_info and not self.update_info.get('available'):
                 self.update_message = "Установлена актуальная версия"
-        except (OSError, ValueError, KeyError, TypeError):
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
             pass
         result_file = config_path.parent / "updates" / "result.json"
         if result_file.is_file():
             try:
                 self.update_message = json.loads(result_file.read_text(encoding="utf-8"))["message"]
                 result_file.unlink()
-            except (OSError, ValueError, KeyError): pass
+            except (OSError, ValueError, KeyError, TypeError): pass
         self.root = tk.Tk()
         self.root.title("RemoteVibecode")
         self.root.geometry("1500x845")
@@ -174,7 +174,9 @@ class AgentWindow:
                     self.update_busy = False
                     self.update_checked = datetime.now().strftime("%d.%m.%Y %H:%M")
                     self.update_message = (f"Доступна версия {value['info']['version']}" if value['available'] else "Установлена актуальная версия")
-                    self.save_update_status()
+                    try: self.save_update_status()
+                    except (OSError, ValueError, TypeError, AttributeError) as exc:
+                        print(f"Не удалось сохранить кэш обновлений: {exc}", flush=True)
                 elif kind == "error":
                     self.update_busy = self.update_downloading = self.update_waiting = False
                     self.update_message = value
@@ -374,6 +376,7 @@ class AgentWindow:
         try:
             old = json.loads(self.update_cache.read_text(encoding="utf-8"))
         except (OSError, ValueError): old = {}
+        if not isinstance(old, dict): old = {}
         data = {"result": self.update_info, "checked": self.update_checked,
                 "message": self.update_message, "attempt": attempt or old.get("attempt", 0)}
         temporary = self.update_cache.with_suffix('.tmp')
@@ -384,7 +387,7 @@ class AgentWindow:
         if self.update_busy or self.update_downloading or self.update_waiting: return
         try:
             last = json.loads(self.update_cache.read_text(encoding="utf-8")).get("attempt", 0)
-        except (OSError, ValueError): last = 0
+        except (OSError, ValueError, TypeError, AttributeError): last = 0
         if not manual and time.time() - last < updates.DAY: return
         self.update_busy = True
         self.update_message = "Проверяю обновления…"

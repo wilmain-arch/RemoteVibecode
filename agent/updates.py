@@ -17,7 +17,7 @@ from cryptography.hazmat.primitives.asymmetric import padding
 
 REPO = 'wilmain-arch/RemoteVibecode'
 API = f'https://api.github.com/repos/{REPO}/releases/latest'
-VERSION = '0.2.1'
+VERSION = '0.2.2'
 DAY = 86400
 MAX_FILE = 300 * 1024 * 1024
 
@@ -167,7 +167,10 @@ def apply(job_path):
     else: raise RuntimeError('Агент не завершился; установка отменена')
     outcome = Path(job_path).with_name('result.json')
     def result(success, message):
-        outcome.write_text(json.dumps({'success':success,'message':message},ensure_ascii=False),encoding='utf-8')
+        try:
+            outcome.write_text(json.dumps({'success':success,'message':message},ensure_ascii=False),encoding='utf-8')
+        except OSError:
+            print(message, flush=True)
     try:
         if hashlib.sha256(source.read_bytes()).hexdigest() != data['sha256']:
             raise ValueError('Файл изменился перед установкой')
