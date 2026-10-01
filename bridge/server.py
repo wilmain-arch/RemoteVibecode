@@ -183,6 +183,7 @@ class Bridge:
         self.event_instance = secrets.token_hex(8)
         self.event_count = 0
         self.send_lock = threading.Lock()
+        self.update_until = 0.0
         self.upload_lock = threading.Lock()
         self.pending: dict[str, dict] = {
             key: item for key, item in saved.get("pending", {}).items()
@@ -343,6 +344,25 @@ class Bridge:
         if not isinstance(value, str) or not VALID_THREAD_ID.fullmatch(value):
             raise ValueError("Некорректный ID чата")
         return value
+
+    def update_status(self, arm: bool = False, release: bool = False) -> dict:
+        """Local updater waits for running Desktop/phone turns and the persisted queue."""
+        with self.send_lock:
+            if release:
+                self.update_until = 0.0
+                return {"armed": False}
+            with self.turn_lock:
+                active = len(self.active_turns)
+            with self.queue_lock:
+                queued = len(self.queued_sends)
+            # Detect tasks started in Desktop, not just through this bridge.
+            active = max(active, sum(t.get("status") in ("active", "inProgress")
+                for t in self.list_threads(limit=10000)))
+            if arm and not active and not queued:
+                self.update_until = time.monotonic() + 120
+            return {"active": active, "queued": queued,
+                    "ready": not active and not queued,
+                    "armed": time.monotonic() < self.update_until}
 
     def list_threads(self, limit: int = 100) -> list[dict]:
         threads: list[dict] = []
@@ -1060,6 +1080,8 @@ class Bridge:
              effort: str | None = None) -> dict:
         thread_id = self._thread_id(thread_id)
         with self.send_lock:
+            if time.monotonic() < self.update_until:
+                raise ValueError("Агент устанавливает обновление. Повторите отправку после подключения.")
             if client_message_id in self.cancelled_sends:
                 raise ValueError("Сообщение отменено")
             if client_message_id in self.sent_messages:
@@ -1220,6 +1242,8 @@ class Bridge:
 
     def steer_queued(self, client_message_id: str) -> dict:
         with self.send_lock:
+            if time.monotonic() < self.update_until:
+                raise ValueError("Агент устанавливает обновление. Повторите отправку после подключения.")
             if client_message_id in self.sent_messages:
                 return self.sent_messages[client_message_id]
             with self.queue_lock:
@@ -1395,6 +1419,16 @@ def main(argv: list[str] | None = None) -> None:
 
         def do_POST(self):
             route = urlparse(self.path).path
+            if route == "/api/update/prepare":
+                if self.client_address[0] != "127.0.0.1" or not hmac.compare_digest(
+                    self.headers.get("Authorization", ""), "Bearer " + bridge.token):
+                    self.send_json(403, {"error": "Только локальный агент"}); return
+                try:
+                    data = self.read_json(4096)
+                    self.send_json(200, bridge.update_status(bool(data.get("arm")), bool(data.get("release"))))
+                except Exception:
+                    self.send_json(409, {"error": "Не удалось проверить завершение задач"})
+                return
             if route == "/api/pairing/rotate":
                 if self.client_address[0] not in ("127.0.0.1", "::1") or not hmac.compare_digest(
                     self.headers.get("Authorization", ""), "Bearer " + bridge.token
