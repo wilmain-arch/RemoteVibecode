@@ -311,7 +311,8 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
             }
             if (text.isBlank() && activities.isEmpty() && attachments.isEmpty() && images.isEmpty()) null else ChatLine(
                 role, text, item.optString("turnId"), item.optInt("steps"), activities,
-                item.optString("id"), item.optString("time"), attachments, images)
+                item.optString("id"), item.optString("time"), attachments, images,
+                item.optString("outcomeSummary"), item.optString("quotaSummary"))
         }
     }
 

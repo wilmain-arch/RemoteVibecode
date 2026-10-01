@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.ime
@@ -95,6 +96,7 @@ internal data class ChatLine(
     val activities: List<ActivityItem> = emptyList(),
     val id: String = "", val time: String = "", val attachments: List<String> = emptyList(),
     val images: List<ChatImage> = emptyList(),
+    val outcomeSummary: String = "", val quotaSummary: String = "",
 )
 internal data class ChatImage(val id: String, val name: String)
 internal data class PendingFile(val id: String, val name: String)
@@ -590,24 +592,30 @@ internal fun CompanionUi(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             "outcome" -> Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                                val headline = line.text.substringBefore("\n")
-                                val failed = headline.contains("ошибкой")
-                                val completed = headline == "Работа Codex завершена"
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    UiGlyph(if (completed) UiIcon.CircleCheck else UiIcon.Close, size = 16.dp,
-                                        tint = if (failed) MaterialTheme.colorScheme.error
-                                            else if (completed) MaterialTheme.colorScheme.secondary
-                                            else MaterialTheme.colorScheme.onSurfaceVariant)
-                                    Spacer(Modifier.width(7.dp))
-                                    Text(headline, style = MaterialTheme.typography.labelMedium,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = if (failed) MaterialTheme.colorScheme.error
-                                            else MaterialTheme.colorScheme.onSurfaceVariant)
+                                val expanded = expandedProcesses[line.id] == true
+                                val failed = line.text.substringBefore("\n").contains("ошибкой")
+                                Row(Modifier.fillMaxWidth().clickable { expandedProcesses[line.id] = !expanded }
+                                    .heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                                        Text(line.outcomeSummary.ifBlank { line.text.substringBefore("\n") },
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Spacer(Modifier.width(5.dp))
+                                        UiGlyph(if (expanded) UiIcon.ChevronDown else UiIcon.ChevronRight,
+                                            size = 15.dp, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    if (line.quotaSummary.isNotBlank()) Text(line.quotaSummary,
+                                        Modifier.weight(1f).padding(start = 12.dp),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
-                                if (line.text.contains("\n")) Text(line.text.substringAfter("\n"),
-                                    Modifier.padding(start = 23.dp, top = 6.dp),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                if (expanded) SelectionContainer {
+                                    Text(line.text, Modifier.padding(bottom = 12.dp),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
                             }
                             else -> Column {
                                 Row(verticalAlignment = Alignment.CenterVertically) {

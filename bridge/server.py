@@ -430,6 +430,33 @@ class Bridge:
             parts.append("Расход задачи не измерялся.")
         return "\n".join(parts)
 
+    def task_outcome_summary(self, turn: dict) -> tuple[str, str]:
+        duration = turn.get("durationMs")
+        if not isinstance(duration, (int, float)):
+            start, end = turn.get("startedAt"), turn.get("completedAt")
+            duration = (end - start) * 1000 if isinstance(start, (int, float)) and isinstance(end, (int, float)) else None
+        labels = {"completed": "Выполнено", "interrupted": "Прервано", "failed": "Ошибка"}
+        headline = labels.get(turn.get("status"), "Завершено")
+        if duration is not None and duration >= 0:
+            seconds = int(duration / 1000)
+            minutes, seconds = divmod(seconds, 60)
+            hours, minutes = divmod(minutes, 60)
+            elapsed = (f"{hours} ч " if hours else "") + (f"{minutes} мин " if minutes or hours else "") + f"{seconds} с"
+            headline += " за " + elapsed
+        with self.state_lock:
+            record = self.task_usage.get(str(turn.get("id") or ""), {})
+            before, after = record.get("before") or {}, record.get("after") or {}
+            percentages = []
+            measured = 0
+            for key, label in (("fiveHours", "за 5ч"), ("week", "недельного")):
+                start, end = before.get(key), after.get(key)
+                if start and end and start.get("resetsAt") == end.get("resetsAt") and start["remainingPercent"] >= end["remainingPercent"]:
+                    measured += 1
+                    percentages.append(f"{start['remainingPercent'] - end['remainingPercent']}% {label}")
+                else:
+                    percentages.append(f"{label}: нет замера")
+        return headline, " и ".join(percentages) if measured else "Расход не измерен"
+
     def projects(self) -> dict:
         threads = self.list_threads(limit=500)
         native_projects = []
@@ -960,7 +987,9 @@ class Bridge:
                 "failed": "Работа Codex завершилась с ошибкой",
             }.get(outcome)
             if outcome_text:
+                outcome_summary, quota_summary = self.task_outcome_summary(turn)
                 turns.append({"id": f"{turn_id}:outcome", "role": "outcome",
+                              "outcomeSummary": outcome_summary, "quotaSummary": quota_summary,
                               "text": outcome_text + "\n" + self.task_usage_text(turn_id) +
                                   ("\n" + str((turn.get("error") or {}).get("message", ""))[:500] if outcome == "failed" else ""),
                               "time": completed_at or started_at,
