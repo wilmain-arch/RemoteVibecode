@@ -17,7 +17,7 @@ from cryptography.hazmat.primitives.asymmetric import padding
 
 REPO = 'wilmain-arch/RemoteVibecode'
 API = f'https://api.github.com/repos/{REPO}/releases/latest'
-VERSION = '0.2.0'
+VERSION = '0.2.1'
 DAY = 86400
 MAX_FILE = 300 * 1024 * 1024
 
@@ -165,11 +165,17 @@ def apply(job_path):
         if not process_alive(data['pid']): break
         time.sleep(.5)
     else: raise RuntimeError('Агент не завершился; установка отменена')
-    if hashlib.sha256(source.read_bytes()).hexdigest() != data['sha256']:
-        raise ValueError('Файл изменился перед установкой')
     outcome = Path(job_path).with_name('result.json')
     def result(success, message):
         outcome.write_text(json.dumps({'success':success,'message':message},ensure_ascii=False),encoding='utf-8')
+    try:
+        if hashlib.sha256(source.read_bytes()).hexdigest() != data['sha256']:
+            raise ValueError('Файл изменился перед установкой')
+    except Exception as exc:
+        result(False, 'Установка отменена: ' + str(exc))
+        command = [data['target']] if sys.platform == 'win32' else ['/usr/bin/remotevibecode-agent']
+        subprocess.Popen(command + ['--config', data['config']], start_new_session=sys.platform != 'win32')
+        return
     if sys.platform != 'win32':
         try:
             r = subprocess.run(['/usr/bin/pkexec','/usr/bin/pacman','-U','--noconfirm','--',str(source)],check=False)
@@ -182,10 +188,12 @@ def apply(job_path):
     backup = target.with_suffix('.previous.exe')
     staged = target.with_suffix('.next.exe')
     child = None
+    replaced = False
     try:
         shutil.copy2(source,staged)
         backup.unlink(missing_ok=True)
         os.replace(target,backup)
+        replaced = True
         os.replace(staged,target)
         child = subprocess.Popen([str(target),'--config',data['config'],'--update-ready',data['ready']])
         for _ in range(120):
@@ -199,7 +207,7 @@ def apply(job_path):
         if child is not None and child.poll() is None:
             child.terminate()
             child.wait(timeout=15)
-        if backup.exists():
+        if replaced and backup.exists():
             target.unlink(missing_ok=True)
             os.replace(backup,target)
         result(False,str(exc))
