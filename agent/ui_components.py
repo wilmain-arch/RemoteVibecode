@@ -27,6 +27,8 @@ def apply_theme(root: tk.Misc) -> None:
 def icon_photo(root: tk.Misc, name: str, *, size=22, color=None) -> ImageTk.PhotoImage:
     """Render the small outline icon set used by the desktop navigation."""
     ink = color or COLORS["muted"]
+    target_size = size
+    size *= 4
     image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
     scale = size / 24
@@ -55,7 +57,7 @@ def icon_photo(root: tk.Misc, name: str, *, size=22, color=None) -> ImageTk.Phot
     else:
         draw.arc(xy(3, 3, 21, 21), 38, 320, fill=ink, width=width)
         draw.line((xy(18, 3), xy(21, 3), xy(21, 7)), fill=ink, width=width, joint="curve")
-    return ImageTk.PhotoImage(image, master=root)
+    return ImageTk.PhotoImage(image.resize((target_size, target_size), Image.Resampling.LANCZOS), master=root)
 
 
 class Surface(tk.Frame):
@@ -64,7 +66,7 @@ class Surface(tk.Frame):
     def __init__(self, parent: tk.Misc, **kwargs):
         super().__init__(parent, bg=COLORS["bg"], bd=0, highlightthickness=0, **kwargs)
         self.canvas = tk.Canvas(self, bg=COLORS["bg"], bd=0, highlightthickness=0, height=1)
-        self.canvas.pack(fill="x", expand=True)
+        self.canvas.pack(fill="both", expand=True)
         self.body = tk.Frame(self.canvas, bg=COLORS["panel"], bd=0, highlightthickness=0)
         self.window = self.canvas.create_window((8, 8), window=self.body, anchor="nw")
         self.body.bind("<Configure>", self._body_changed, add="+")

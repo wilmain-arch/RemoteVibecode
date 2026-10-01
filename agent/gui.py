@@ -448,6 +448,12 @@ class AgentWindow:
         tk.Label(text, text=description, bg=COLORS["panel"], fg=COLORS["muted"],
                  font=(FONT, TYPE["small"]), anchor="w").pack(fill="x", pady=(2, 0))
 
+    def _phone_icon(self, parent):
+        picture = icon_photo(self.root, "phone", size=30, color=COLORS["muted"])
+        label = tk.Label(parent, image=picture, bg=COLORS["panel_raised"])
+        label.image = picture
+        label.pack(side="left", padx=(0, 16))
+
     def _status_tiles(self, parent, items):
         strip = tk.Frame(parent, bg=COLORS["panel"])
         strip.pack(fill="x", pady=(12, 16))
@@ -534,8 +540,7 @@ class AgentWindow:
         row.pack(fill="x")
         phone = tk.Frame(row, bg=COLORS["panel_raised"])
         phone.pack(side="left", fill="x", expand=True)
-        tk.Label(phone, text="▯", bg=COLORS["panel_raised"], fg=COLORS["white"],
-                 font=(FONT, 21)).pack(side="left", padx=(0, 13))
+        self._phone_icon(phone)
         labels = tk.Frame(phone, bg=COLORS["panel_raised"])
         labels.pack(side="left", fill="x", expand=True)
         tk.Label(labels, text="Привязанный телефон" if self.paired() else "Телефон не привязан",
@@ -564,7 +569,7 @@ class AgentWindow:
         addr.insert(0, address)
         addr.configure(state="readonly")
         self.address_entry = addr
-        AppButton(row, "▢  Копировать", lambda: self.copy_address(
+        AppButton(row, "Копировать", lambda: self.copy_address(
             f"https://{self.config['relayHost']}:{self.config.get('publicPort', 8765)}") if self.configured else None,
             compact=True).pack(side="left", padx=(10, 0))
 
@@ -573,8 +578,7 @@ class AgentWindow:
         _, inner = self._card(parent, "Привязанные устройства")
         row = tk.Frame(inner, bg=COLORS["panel_raised"], padx=16, pady=16)
         row.pack(fill="x")
-        tk.Label(row, text="▯", bg=COLORS["panel_raised"], fg=COLORS["white"],
-                 font=(FONT, 26)).pack(side="left", padx=(0, 16))
+        self._phone_icon(row)
         labels = tk.Frame(row, bg=COLORS["panel_raised"])
         labels.pack(side="left", fill="x", expand=True)
         tk.Label(labels, text="Телефон привязан" if self.paired() else "Телефон не привязан",
