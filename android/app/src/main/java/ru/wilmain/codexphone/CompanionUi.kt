@@ -116,6 +116,7 @@ internal data class ChatLine(
     val id: String = "", val time: String = "", val attachments: List<String> = emptyList(),
     val images: List<ChatImage> = emptyList(),
     val outcomeSummary: String = "", val quotaSummary: String = "",
+    val clientMessageId: String = "",
 )
 internal data class ChatImage(val id: String, val name: String)
 internal data class PendingFile(val id: String, val name: String)
@@ -131,6 +132,7 @@ internal data class LocalMessage(
     val cancelRequested: Boolean = false,
     val deliveredTurnId: String = "",
     val steered: Boolean = false,
+    val nativeSubmissionId: String = "",
 )
 internal data class ThreadItem(val id: String, val title: String, val status: String, val updatedAt: Long)
 internal data class ProjectGroup(val id: String, val name: String, val cwd: String?, val threads: List<ThreadItem>)
@@ -250,7 +252,15 @@ internal fun CompanionUi(
     onCancelTransfer: () -> Unit,
     onDisconnect: () -> Unit,
     loadImage: suspend (String) -> ByteArray,
+    activeTurnId: String = "",
+    taskNotifications: Boolean = false,
+    onTaskNotifications: () -> Unit = {},
+    onJumpHistory: (String) -> Unit = {},
 ) {
+    var controlsOpen by rememberSaveable(selectedThreadId) { mutableStateOf(false) }
+    var controlsTurn by rememberSaveable(selectedThreadId) { mutableStateOf("") }
+    var focusTurn by rememberSaveable(selectedThreadId) { mutableStateOf("") }
+    var changesOpen by rememberSaveable(selectedThreadId) { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
     val density = LocalDensity.current
     val imeHeight = WindowInsets.ime.getBottom(density)
@@ -344,6 +354,32 @@ internal fun CompanionUi(
         }
     }
     val modelName = models.firstOrNull { it.id == selectedModel }?.name ?: selectedModel.ifBlank { "Модель чата" }
+    LaunchedEffect(focusTurn, lines) {
+        if (focusTurn.isNotBlank()) {
+            val index = lines.indexOfFirst { it.turnId == focusTurn && it.role == "user" }
+            if (index >= 0) {
+                firstHistoryScroll = false; followBottom = false
+                listState.scrollToItem(index + if (historyHasMore || historyLoading || historyError.isNotBlank()) 1 else 0)
+                focusTurn = ""
+            }
+        }
+    }
+    if (controlsOpen && paired) {
+        WorkspaceControls(selectedThreadId, title, controlsTurn, onSubagentRequest,
+            onClose = { controlsOpen = false },
+            onSelect = { controlsOpen = false; onSelectThread(it) },
+            onJump = { focusTurn = it; onJumpHistory(it) },
+            onChanged = { onRefreshCatalog(); onRetryHistory() })
+        return
+    }
+    if (changesOpen && paired) {
+        ChangesScreen(selectedThreadId, onSubagentRequest, { changesOpen = false }) { reference ->
+            scope.launch { onResolveProjectFile(reference)?.let { folder ->
+                onBrowseWorkspace(folder); changesOpen = false; filesOpen = true
+            } }
+        }
+        return
+    }
     if (subagentsOpen && paired) {
         SubagentsScreen(selectedThreadId, { subagentsOpen = false }, onSubagentRequest, loadImage,
             onProjectFile = { reference -> scope.launch {
@@ -443,7 +479,13 @@ internal fun CompanionUi(
                             if (paired) {
                                 DropdownMenuItem(text = { Text("Новый чат") }, leadingIcon = { UiGlyph(UiIcon.Plus) },
                                     onClick = { chatMenuOpen = false; onNewChat(null) })
-                                DropdownMenuItem(text = { Text("Субагенты") }, leadingIcon = { UiGlyph(UiIcon.Agents) },
+                                DropdownMenuItem(text = { Text("Инструменты чата") },
+                                    leadingIcon = { UiGlyph(UiIcon.Files) }, onClick = { chatMenuOpen = false; controlsTurn = ""; controlsOpen = true })
+                                DropdownMenuItem(text = { Text("Изменения файлов") },
+                                leadingIcon = { UiGlyph(UiIcon.Files) }, onClick = { chatMenuOpen = false; changesOpen = true })
+                            DropdownMenuItem(text = { Text(if (taskNotifications) "Выключить уведомления" else "Включить уведомления") },
+                                leadingIcon = { UiGlyph(UiIcon.Message) }, onClick = { chatMenuOpen = false; onTaskNotifications() })
+                            DropdownMenuItem(text = { Text("Субагенты") }, leadingIcon = { UiGlyph(UiIcon.Agents) },
                                     onClick = { chatMenuOpen = false; subagentsOpen = true })
                             }
                             DropdownMenuItem(text = { Text(if (updateAvailable) "Есть обновление" else "Обновления") },
@@ -455,26 +497,8 @@ internal fun CompanionUi(
             bottomBar = {
                 if (paired) Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background).imePadding().navigationBarsPadding()
                     .padding(horizontal = 16.dp, vertical = 8.dp)) {
-                    if (visibleQueue.isNotEmpty()) {
-                        val next = visibleQueue.first()
-                        Surface(shape = RoundedCornerShape(15.dp),
-                            color = MaterialTheme.colorScheme.secondaryContainer,
-                            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
-                            Row(Modifier.fillMaxWidth().padding(start = 13.dp, end = 7.dp, top = 5.dp, bottom = 5.dp),
-                                verticalAlignment = Alignment.CenterVertically) {
-                                Column(Modifier.weight(1f)) {
-                                    Text("В очереди · ${visibleQueue.size}",
-                                        style = MaterialTheme.typography.labelMedium,
-                                        fontWeight = FontWeight.SemiBold)
-                                    Text(next.text.ifBlank { "Сообщение с вложением" }, maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        style = MaterialTheme.typography.bodySmall)
-                                }
-                                if (next.acceptedByBridge && !next.cancelRequested)
-                                    TextButton(onClick = { onSteerQueued(next) }) { Text("Корректировать") }
-                            }
-                        }
-                    }
+                    TaskControls(selectedThreadId, activeTurnId, onSubagentRequest,
+                        onChanges = { changesOpen = true }, onInterrupted = onRetryHistory)
                     Surface(shape = UiSpace.composer,
                         color = MaterialTheme.colorScheme.surfaceVariant) {
                         Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
@@ -643,6 +667,9 @@ internal fun CompanionUi(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         style = MaterialTheme.typography.labelSmall)
                                     CopyAction(line.text)
+                                    IconButton(onClick = { controlsTurn = line.turnId; controlsOpen = true }, modifier = Modifier.size(48.dp)) {
+                                        UiGlyph(UiIcon.More, "Действия с этим сообщением", 20.dp)
+                                    }
                                 }
                             }
                             "process" -> {
@@ -775,7 +802,7 @@ internal fun CompanionUi(
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     Row {
-                                        if (item.acceptedByBridge && !item.cancelRequested && item.deliveredTurnId.isBlank())
+                                        if (item.acceptedByBridge && !item.cancelRequested && item.deliveredTurnId.isBlank() && item.nativeSubmissionId.isBlank())
                                             TextButton(onClick = { onSteerQueued(item) }) {
                                                 Text("Корректировать сейчас")
                                             }

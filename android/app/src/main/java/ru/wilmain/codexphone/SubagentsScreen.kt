@@ -137,6 +137,11 @@ internal fun SubagentsScreen(threadId: String, onClose: () -> Unit,
             finally { actionBusy = false }
         }
     }
+    var changesOpen by rememberSaveable(selectedId) { mutableStateOf(false) }
+    if (changesOpen && selectedId != null) {
+        ChangesScreen(selectedId.orEmpty(), request, { changesOpen = false }, onProjectFile)
+        return
+    }
     Scaffold(containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             UiScreenHeader(selected?.name ?: "Субагенты", ::back,
@@ -146,6 +151,8 @@ internal fun SubagentsScreen(threadId: String, onClose: () -> Unit,
         }, bottomBar = {
             if (selectedId != null) Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background)
                 .imePadding().navigationBarsPadding().padding(UiSpace.screen)) {
+                TaskControls(selectedId.orEmpty(), "", request, onChanges = { changesOpen = true })
+                TextButton(onClick = { changesOpen = true }) { Text("Изменения файлов") }
                 if (notice.isNotBlank()) Text(notice, style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.padding(bottom = 8.dp))
                 if (selected?.canSend == true) {

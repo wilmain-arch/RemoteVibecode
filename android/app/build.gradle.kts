@@ -13,8 +13,13 @@ android {
         minSdk = 26
         targetSdk = 35
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        versionCode = 40
-        versionName = "0.11.2"
+        versionCode = 42
+        versionName = "0.13.0"
+    }
+
+    // Isolated package for device tests with synthetic credentials and notification settings.
+    if (providers.gradleProperty("taskFixture").orNull == "true") {
+        buildTypes.getByName("debug").applicationIdSuffix = ".taskfixture"
     }
 
     signingConfigs {

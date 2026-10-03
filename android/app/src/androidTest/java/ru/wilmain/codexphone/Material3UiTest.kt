@@ -117,7 +117,8 @@ class Material3UiTest {
             }
         }
         compose.onNode(hasSetTextAction()).performClick()
-        compose.onAllNodesWithText("Корректировать").onFirst().assertIsDisplayed().performClick()
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("Корректировать сейчас"))
+        compose.onNodeWithText("Корректировать сейчас").assertIsDisplayed().performClick()
         compose.runOnIdle { check(steered) }
         compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("Отменить"))
         compose.onNodeWithText("Отменить").performClick()
@@ -309,7 +310,15 @@ class Material3UiTest {
         val client = okhttp3.OkHttpClient.Builder().sslSocketFactory(clientTls.sslSocketFactory(), clientTls.trustManager)
             .readTimeout(2, java.util.concurrent.TimeUnit.SECONDS).retryOnConnectionFailure(false).build()
         val agents = """{"agents":[{"id":"test-agent","parentId":"test","name":"Gauss","model":"GPT-6.1 Sol","status":"idle","canSend":true,"task":"Проверка интерфейса"}]}"""
-        server.enqueue(okhttp3.mockwebserver.MockResponse().setResponseCode(503).setBody("Изолированный сетевой отказ"))
+        // Repeated polling and cancelled requests must not consume one-shot responses.
+        val phase = java.util.concurrent.atomic.AtomicInteger(0)
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): okhttp3.mockwebserver.MockResponse = when (phase.get()) {
+                0 -> okhttp3.mockwebserver.MockResponse().setResponseCode(503).setBody("Изолированный сетевой отказ")
+                2 -> okhttp3.mockwebserver.MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.DISCONNECT_AFTER_REQUEST)
+                else -> okhttp3.mockwebserver.MockResponse().setBody(agents)
+            }
+        }
         try {
             compose.setContent {
                 MaterialTheme(colorScheme = darkPalette, typography = appTypography) {
@@ -325,21 +334,21 @@ class Material3UiTest {
                     }, loadImage = { fixtureImage() }, onProjectFile = {}, onSaveImage = {})
                 }
             }
-            compose.waitUntil(5000) { compose.onAllNodesWithText("Не удалось обновить", substring = true).fetchSemanticsNodes().isNotEmpty() }
+            compose.waitUntil(10000) { compose.onAllNodesWithText("Не удалось обновить", substring = true).fetchSemanticsNodes().isNotEmpty() }
             screenshot("subagents-error")
-            server.enqueue(okhttp3.mockwebserver.MockResponse().setBody(agents))
+            phase.set(1)
             compose.onNodeWithContentDescription("Обновить").performClick()
-            compose.waitUntil(5000) { compose.onAllNodesWithText("Gauss").fetchSemanticsNodes().isNotEmpty() }
+            compose.waitUntil(10000) { compose.onAllNodesWithText("Gauss").fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithText("GPT-6.1 Sol").assertIsDisplayed()
             screenshot("subagents-recovered")
             // A real connection drop, then retry. Existing data must remain usable.
-            server.enqueue(okhttp3.mockwebserver.MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.DISCONNECT_AT_START))
+            phase.set(2)
             compose.onNodeWithContentDescription("Обновить").performClick()
-            compose.waitUntil(5000) { compose.onAllNodesWithText("Не удалось обновить", substring = true).fetchSemanticsNodes().isNotEmpty() }
+            compose.waitUntil(10000) { compose.onAllNodesWithText("Не удалось обновить", substring = true).fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithText("Gauss").assertIsDisplayed()
-            server.enqueue(okhttp3.mockwebserver.MockResponse().setBody(agents))
+            phase.set(3)
             compose.onNodeWithContentDescription("Обновить").performClick()
-            compose.waitUntil(5000) { compose.onAllNodesWithText("Не удалось обновить", substring = true).fetchSemanticsNodes().isEmpty() }
+            compose.waitUntil(10000) { compose.onAllNodesWithText("Не удалось обновить", substring = true).fetchSemanticsNodes().isEmpty() }
         } finally { server.shutdown() }
     }
 

@@ -127,7 +127,7 @@ private fun readLocalQueue(prefs: android.content.SharedPreferences): List<Local
             if (item.isNull("model")) null else item.optString("model").ifBlank { null },
             if (item.isNull("effort")) null else item.optString("effort").ifBlank { null },
             item.optBoolean("acceptedByBridge"), item.optBoolean("cancelRequested"),
-            item.optString("deliveredTurnId"), item.optBoolean("steered"))
+            item.optString("deliveredTurnId"), item.optBoolean("steered"), item.optString("nativeSubmissionId"))
     }
 }.getOrDefault(emptyList())
 
@@ -141,7 +141,7 @@ private fun saveLocalQueue(prefs: android.content.SharedPreferences, messages: L
             .put("acceptedByBridge", message.acceptedByBridge)
             .put("cancelRequested", message.cancelRequested)
             .put("deliveredTurnId", message.deliveredTurnId)
-            .put("steered", message.steered))
+            .put("steered", message.steered).put("nativeSubmissionId", message.nativeSubmissionId))
     }
     prefs.edit().putString("localQueue", array.toString()).apply()
 }
@@ -260,23 +260,34 @@ internal val appTypography = Typography().let { base ->
 
 class MainActivity : ComponentActivity() {
     private var pairingUri by mutableStateOf<Uri?>(null)
+    private var openThreadId by mutableStateOf("")
+    private var notificationNonce by mutableStateOf(0)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         if (android.os.Build.VERSION.SDK_INT >= 29) window.isNavigationBarContrastEnforced = false
         pairingUri = intent?.data
-        setContent { CompanionScreen(pairingUri) }
+        openThreadId = intent?.getStringExtra("openThreadId").orEmpty()
+        setContent { CompanionScreen(pairingUri, openThreadId, notificationNonce) }
     }
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         pairingUri = intent.data
+        openThreadId = intent.getStringExtra("openThreadId").orEmpty()
+        notificationNonce++
     }
 }
 
 @Composable
-private fun CompanionScreen(externalPairingUri: Uri?) {
+private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: String = "", notificationNonce: Int = 0) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("companion", Context.MODE_PRIVATE) }
+    var taskNotifications by remember { mutableStateOf(prefs.getBoolean("taskNotifications", false)) }
+    var activeTurnId by remember { mutableStateOf("") }
+    val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        taskNotifications = granted
+        prefs.edit().putBoolean("taskNotifications", granted).apply()
+    }
     var themeMode by remember { mutableStateOf(prefs.getString("themeMode", "system") ?: "system") }
     val scope = rememberCoroutineScope()
     val updates = remember { AppUpdates(context.applicationContext, scope) }
@@ -330,6 +341,7 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
     val pendingFileDeletes = remember { mutableStateListOf<String>().apply {
         addAll(prefs.getStringSet("pendingFileDeletes", emptySet()).orEmpty())
     } }
+    var desktopQueue by remember { mutableStateOf(emptyList<LocalMessage>()) }
     val localQueue = remember { mutableStateListOf<LocalMessage>().apply { addAll(readLocalQueue(prefs)) } }
     val outboxFiles = remember { mutableStateListOf<RemoteFile>() }
     var outboxLoading by remember { mutableStateOf(false) }
@@ -373,7 +385,8 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
             if (text.isBlank() && activities.isEmpty() && attachments.isEmpty() && images.isEmpty()) null else ChatLine(
                 role, text, item.optString("turnId"), item.optInt("steps"), activities,
                 item.optString("id"), item.optString("time"), attachments, images,
-                item.optString("outcomeSummary"), item.optString("quotaSummary"))
+                item.optString("outcomeSummary"), item.optString("quotaSummary"),
+                if (item.isNull("clientMessageId")) "" else item.optString("clientMessageId"))
         }
     }
 
@@ -545,6 +558,11 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
                 threadEffort = if (state.isNull("reasoningEffort")) "" else state.optString("reasoningEffort")
                 val busy = state.optString("status") == "active"
                 codexBusy = busy
+                activeTurnId = state.optString("activeTurnId")
+                if (taskNotifications && activeTurnId.isNotBlank()) {
+                    try { TaskWatchService.watch(context, selectedThreadId, activeTurnId) }
+                    catch (failure: IllegalStateException) { status = "Фоновое наблюдение недоступно: откройте приложение" }
+                }
                 val queued = state.optInt("queuedCount", 0)
                 val queueError = state.optString("queueError")
                 val chatQueue = localQueue.filter { it.threadId == selectedThreadId }
@@ -560,17 +578,40 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
                     busy -> "Codex отвечает…"
                     else -> "Подключено"
                 }
+                try {
+                    val snapshot = withReachableHost { root -> withContext(Dispatchers.IO) {
+                        requestJson(client, "$root/api/control?section=queue&threadId=${Uri.encode(selectedThreadId)}", token)
+                    } }
+                    val cancelled = snapshot.optJSONArray("cancelledIds") ?: JSONArray()
+                    val cancelledIds = (0 until cancelled.length()).mapTo(HashSet()) { cancelled.optString(it) }
+                    localQueue.removeAll { it.id in cancelledIds }
+                    val receipts = snapshot.optJSONObject("receipts") ?: JSONObject()
+                    for (index in localQueue.indices) {
+                        receipts.optJSONObject(localQueue[index].id)?.let { receipt ->
+                            localQueue[index] = localQueue[index].copy(deliveredTurnId = receipt.optString("turnId"))
+                        }
+                    }
+                    desktopQueue = (snapshot.optJSONArray("data") ?: JSONArray()).objects().map { msg ->
+                        val text = (msg.optJSONArray("input") ?: JSONArray()).objects().filter { it.optString("type") == "text" }.joinToString("\n") { it.optString("text") }
+                        LocalMessage(msg.optString("clientUserMessageId").ifBlank { msg.optString("id") }, text, emptyList(),
+                            threadId = selectedThreadId, acceptedByBridge = true, nativeSubmissionId = msg.optString("id"))
+                    }
+                } catch (cancel: CancellationException) { throw cancel }
+                catch (failure: Exception) {
+                    if (desktopQueue.isNotEmpty()) status = "Очередь не обновлена: ${failure.message}"
+                }
                 val latest = parseHistory(history)
                 historyReady = true
                 initialHistoryLoading = false
                 initialHistoryError = ""
                 val confirmed = latest.filter { it.role == "user" }
                 localQueue.removeAll { pending ->
-                    pending.deliveredTurnId.isNotBlank() && confirmed.any { line ->
+                    confirmed.any { line ->
+                        line.clientMessageId == pending.id || (pending.deliveredTurnId.isNotBlank() &&
                         line.turnId == pending.deliveredTurnId &&
                             ((pending.text.isNotBlank() && line.text.trim() == pending.text.trim()) ||
                                 (pending.text.isBlank() && pending.files.isNotEmpty() &&
-                                    (line.images.isNotEmpty() || line.attachments.isNotEmpty())))
+                                    (line.images.isNotEmpty() || line.attachments.isNotEmpty()))))
                     }
                 }
                 saveLocalQueue(prefs, localQueue.toList())
@@ -766,6 +807,8 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
         }
         prefs.edit().putString("draft:$selectedThreadId", input).apply()
         selectedThreadId = threadId
+        desktopQueue = emptyList()
+        activeTurnId = ""
         prefs.edit().putString("selectedThreadId", threadId).apply()
         input = prefs.getString("draft:$threadId", "") ?: ""
         selectedModel = ""
@@ -957,9 +1000,14 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
                     }
                     loadCatalog()
                 }
+                val startedTurn = result.optString("turnId")
+                if (taskNotifications && startedTurn.isNotBlank()) {
+                    try { TaskWatchService.watch(context, actualThreadId.ifBlank { message.threadId.ifBlank { selectedThreadId } }, startedTurn) }
+                    catch (failure: IllegalStateException) { status = "Откройте приложение для фоновых уведомлений" }
+                }
                 if (result.optBoolean("queued")) {
                     val index = localQueue.indexOfFirst { it.id == message.id }
-                    if (index >= 0) localQueue[index] = localQueue[index].copy(acceptedByBridge = true)
+                    if (index >= 0) localQueue[index] = localQueue[index].copy(acceptedByBridge = true, nativeSubmissionId = result.optString("nativeSubmissionId"))
                 } else {
                     val index = localQueue.indexOfFirst { it.id == message.id }
                     if (index >= 0) localQueue[index] = localQueue[index].copy(
@@ -988,6 +1036,7 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
                     }
                 }
             }.onSuccess {
+                context.stopService(Intent(context, TaskWatchService::class.java))
                 token = ""
                 lines = emptyList()
                 historyReady = false
@@ -1010,6 +1059,13 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
         }
     }
 
+    LaunchedEffect(notificationThreadId, notificationNonce, token) {
+        if (notificationThreadId.isNotBlank() && token.isNotBlank()) {
+            try { selectThread(notificationThreadId) }
+            catch (cancel: CancellationException) { throw cancel }
+            catch (failure: Exception) { status = "Не удалось открыть уведомление: ${failure.message}" }
+        }
+    }
     LaunchedEffect(externalPairingUri) {
         if (externalPairingUri != null) {
             runCatching { acceptPair(externalPairingUri) }
@@ -1084,6 +1140,20 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
     MaterialTheme(colorScheme = if (darkTheme) darkPalette else lightPalette, typography = appTypography) {
         if (updatesOpen) UpdatesScreen(updates, onClose = { updatesOpen = false })
         else CompanionUi(
+            activeTurnId = activeTurnId,
+            taskNotifications = taskNotifications,
+            onTaskNotifications = {
+                if (taskNotifications) {
+                    taskNotifications = false
+                    prefs.edit().putBoolean("taskNotifications", false).apply()
+                    context.stopService(Intent(context, TaskWatchService::class.java))
+                } else if (android.os.Build.VERSION.SDK_INT >= 33 && !TaskWatchService.canNotify(context)) {
+                    notificationPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    taskNotifications = true
+                    prefs.edit().putBoolean("taskNotifications", true).apply()
+                }
+            },
             onUpdates = { updatesOpen = true },
             updateAvailable = updates.update != null,
             themeMode = themeMode,
@@ -1094,7 +1164,7 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
             paired = token.isNotBlank(), relayOnly = BuildConfig.RELAY_ONLY,
             title = title, projectName = projectName,
             status = status, connectionState = connectionState, usageLimits = usageLimits, limitsLoading = limitsLoading,
-            limitsError = limitsError, lines = lines, queue = localQueue.toList(),
+            limitsError = limitsError, lines = lines, queue = (desktopQueue + localQueue.toList()).distinctBy { it.id },
             selectedThreadId = selectedThreadId, projects = projects.toList(),
             catalogLoading = catalogLoading, catalogError = catalogError,
             models = models.toList(), selectedModel = selectedModel.ifBlank { threadModel },
@@ -1113,6 +1183,19 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
             historyHasMore = historyHasMore, historyLoading = loadingOlder,
             historyError = historyError,
             initialHistoryLoading = initialHistoryLoading, initialHistoryError = initialHistoryError,
+            onJumpHistory = { target -> scope.launch {
+                val requestedThread = selectedThreadId
+                try {
+                    val page = withReachableHost { root -> withContext(Dispatchers.IO) {
+                        requestJson(client, "$root/api/history?threadId=${Uri.encode(requestedThread)}&around=${Uri.encode(target)}", token)
+                    } }
+                    if (requestedThread == selectedThreadId) {
+                        lines = parseHistory(page); olderPagesLoaded = true
+                        historyHasMore = page.optBoolean("hasMore"); historyError = ""
+                    }
+                } catch (cancel: CancellationException) { throw cancel }
+                catch (failure: Exception) { historyError = "Не удалось открыть сообщение: ${failure.message}" }
+            } },
             onRetryHistory = { scope.launch { runCatching { refresh() } } },
             onInput = {
                 input = it
@@ -1201,7 +1284,7 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
                         .toRequestBody("application/json".toMediaType()))
                     client.newCall(builder.build()).execute().use { response ->
                         val result = JSONObject(response.body?.string().orEmpty())
-                        if (!response.isSuccessful) error(result.optString("error", "Ошибка субагентов"))
+                        if (!response.isSuccessful) error(result.optString("error", "Ошибка запроса"))
                         result
                     }
                 } }
@@ -1311,8 +1394,23 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
                 }
             },
             onCancelQueued = { message ->
+                if (message.nativeSubmissionId.isNotBlank()) {
+                    scope.launch {
+                        try {
+                            val payload = JSONObject().put("threadId", message.threadId).put("action", "queue-delete").put("submissionId", message.nativeSubmissionId)
+                            withReachableHost { root -> withContext(Dispatchers.IO) {
+                                val request = Request.Builder().url("$root/api/control/action").header("Authorization", "Bearer $token")
+                                    .post(payload.toString().toRequestBody("application/json".toMediaType())).build()
+                                client.newCall(request).execute().use { res -> if (!res.isSuccessful) error(JSONObject(res.body?.string().orEmpty()).optString("error")) }
+                            } }
+                            desktopQueue = desktopQueue.filterNot { it.id == message.id }
+                            localQueue.removeAll { it.id == message.id }; saveLocalQueue(prefs, localQueue.toList())
+                        } catch (cancel: CancellationException) { throw cancel }
+                        catch (failure: Exception) { status = "Не удалось отменить: ${failure.message}" }
+                    }
+                }
                 val index = localQueue.indexOfFirst { it.id == message.id }
-                if (index >= 0) {
+                if (index >= 0 && message.nativeSubmissionId.isBlank()) {
                     localQueue[index] = localQueue[index].copy(cancelRequested = true)
                     saveLocalQueue(prefs, localQueue.toList())
                     scope.launch { runCatching { cancelQueued(message.id) }
@@ -1446,7 +1544,7 @@ private suspend fun downloadFile(
     } } finally { cancellation.dispose(); activeCall.compareAndSet(call, null) }
 }
 
-private fun requestJson(client: OkHttpClient, url: String, token: String): JSONObject {
+internal fun requestJson(client: OkHttpClient, url: String, token: String): JSONObject {
     val request = Request.Builder().url(url).header("Authorization", "Bearer $token").get().build()
     return client.newCall(request).execute().use { response ->
         val json = JSONObject(response.body?.string().orEmpty())
@@ -1455,7 +1553,7 @@ private fun requestJson(client: OkHttpClient, url: String, token: String): JSONO
     }
 }
 
-private fun pinnedClient(fingerprintInput: String): OkHttpClient {
+internal fun pinnedClient(fingerprintInput: String): OkHttpClient {
     val expected = fingerprintInput.filter { it.isLetterOrDigit() }.uppercase()
     val trustManager = object : X509TrustManager {
         override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
@@ -1500,7 +1598,7 @@ private fun tokenKey(): SecretKey {
     }
 }
 
-private fun saveToken(context: Context, prefs: android.content.SharedPreferences, token: String) {
+internal fun saveToken(context: Context, prefs: android.content.SharedPreferences, token: String) {
     val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, tokenKey()) }
     val encrypted = cipher.doFinal(token.toByteArray(Charsets.UTF_8))
     prefs.edit()
@@ -1509,7 +1607,7 @@ private fun saveToken(context: Context, prefs: android.content.SharedPreferences
         .apply()
 }
 
-private fun readSavedToken(context: Context, prefs: android.content.SharedPreferences): String {
+internal fun readSavedToken(context: Context, prefs: android.content.SharedPreferences): String {
     val ivText = prefs.getString("tokenIv", null) ?: return ""
     val cipherText = prefs.getString("tokenCiphertext", null) ?: return ""
     return runCatching {

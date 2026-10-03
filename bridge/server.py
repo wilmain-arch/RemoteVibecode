@@ -28,8 +28,12 @@ from pathlib import Path
 from urllib.parse import urlparse, parse_qs, quote, unquote
 try:
     from .adb_devices import AdbDevices
+    from .interactions import InteractionInbox
+    from .controls import Controls
 except ImportError:
     from adb_devices import AdbDevices
+    from interactions import InteractionInbox
+    from controls import Controls
 
 try:
     from PIL import Image, ImageOps
@@ -71,6 +75,7 @@ class CodexRpc:
         self._id = 0
         self.events: queue.Queue = queue.Queue(maxsize=1000)
         self.on_event = on_event
+        self.interactions = InteractionInbox(self._send)
         self.reader = threading.Thread(target=self._read_loop, daemon=True)
         self.reader.start()
         result = self.call(
@@ -92,12 +97,20 @@ class CodexRpc:
             except json.JSONDecodeError:
                 continue
             request_id = data.get("id")
-            if isinstance(request_id, int):
+            if data.get("method") and "id" in data:
+                if self.interactions.receive(data):
+                    if self.on_event:
+                        self.on_event(data)
+                else:
+                    self._send({"id": request_id, "error": {"code": -32601, "message": "Unsupported client request"}})
+            elif isinstance(request_id, int):
                 with self._waiters_lock:
                     waiter = self._waiters.get(request_id)
                 if waiter is not None:
                     waiter.put(data)
             elif data.get("method"):
+                if data["method"] == "serverRequest/resolved":
+                    self.interactions.resolve((data.get("params") or {}).get("requestId"))
                 if self.on_event:
                     self.on_event(data)
                 try:
@@ -192,12 +205,18 @@ class Bridge:
         }
         self.sent_messages: dict[str, dict] = saved.get("sent_messages", {})
         self.queued_sends: dict[str, dict] = saved.get("queued_sends", {})
+        self.thread_modes = saved.get("thread_modes", {})
+        self.published_plans = saved.get("published_plans", {})
+        self.control_operations = saved.get("control_operations", {})
+        self.controls = Controls(self)
         self.cancelled_sends: dict[str, float] = saved.get("cancelled_sends", {})
         self.last_queue_error = saved.get("last_queue_error", "")
         self.queue_lock = threading.Lock()
         self.chat_files: dict[tuple[str, str], Path] = {}
         self.chat_images: dict[str, Path] = {}
         self.chat_images_lock = threading.Lock()
+        self.agent_parents = {}
+        self.agent_parents_lock = threading.RLock()
         self.agent_labels = {}
         self.agent_labels_lock = threading.Lock()
         self._save_state()
@@ -226,6 +245,19 @@ class Bridge:
             method = event.get("method", "")
             params = event.get("params") or {}
             thread_id = params.get("threadId")
+            self._remember_agent_relations(thread_id, [params.get("item") or {}])
+            if method == "turn/plan/updated" and isinstance(thread_id, str) and isinstance(params.get("turnId"), str):
+                plan = params.get("plan") or []
+                if isinstance(plan, list):
+                    steps = [{"step": str(p.get("step", ""))[:1000], "status": p.get("status", "pending")}
+                             for p in plan[:100] if isinstance(p, dict)]
+                    with self.state_lock:
+                        self.published_plans[params["turnId"]] = {"threadId": thread_id, "steps": steps,
+                            "explanation": str(params.get("explanation") or "")[:2000]}
+                        while len(self.published_plans) > 200:
+                            self.published_plans.pop(next(iter(self.published_plans)))
+                        self._save_state()
+
             turn = params.get("turn") or {}
             turn_id = turn.get("id") if isinstance(turn, dict) else None
             if method in ("turn/started", "turn/completed", "thread/tokenUsage/updated", "model/rerouted"):
@@ -339,6 +371,9 @@ class Bridge:
                             if self.active_turns:
                                 self.rpc_last_used = time.monotonic()
                                 continue
+                    if self.rpc.interactions.has_pending():
+                        self.rpc_last_used = time.monotonic()
+                        continue
                     self.rpc.close()
                     self.rpc = None
 
@@ -521,6 +556,105 @@ class Bridge:
                 return response
         self.send(text, [], message_id, agent_id)
         return {"accepted": True, "message": "Задача отправлена"}
+
+    def _remember_agent_relations(self, thread_id: str | None, items: list[dict]) -> None:
+        if not thread_id:
+            return
+        with self.agent_parents_lock:
+            for item in items:
+                children = ([item.get("agentThreadId")] if item.get("type") == "subAgentActivity"
+                            else item.get("receiverThreadIds") or [] if item.get("type") == "collabAgentToolCall" and item.get("tool") == "spawnAgent" else [])
+                for child in children:
+                    if child and child != thread_id:
+                        self.agent_parents[child] = thread_id
+                while len(self.agent_parents) > 2000:
+                    self.agent_parents.pop(next(iter(self.agent_parents)))
+
+    def requests(self, thread_id: str | None) -> dict:
+        thread_id = self._thread_id(thread_id)
+        rpc = self.rpc
+        with self.agent_parents_lock:
+            descendants = set()
+            for child in self.agent_parents:
+                parent, seen = child, set()
+                while parent in self.agent_parents and parent not in seen:
+                    seen.add(parent)
+                    parent = self.agent_parents[parent]
+                    if parent == thread_id:
+                        descendants.add(child)
+                        break
+        return {"requests": rpc.interactions.list(thread_id, descendants) if rpc and rpc.proc.poll() is None else []}
+
+    def respond_request(self, data: dict) -> dict:
+        thread_id = self._thread_id(data.get("threadId"))
+        rpc = self.rpc
+        if rpc is None or rpc.proc.poll() is not None:
+            raise ValueError("Сессия Codex закрыта; обновите чат")
+        result = rpc.interactions.respond(thread_id, data.get("id"), data.get("response"))
+        self._signal_event()
+        return result
+
+    def interrupt_turn(self, data: dict) -> dict:
+        thread_id = self._thread_id(data.get("threadId"))
+        expected = data.get("turnId")
+        if not isinstance(expected, str) or not expected:
+            raise ValueError("Обновите чат перед остановкой")
+        with self.rpc_session() as rpc:
+            thread = rpc.call("thread/read", {"threadId": thread_id, "includeTurns": True})["thread"]
+            active = next((turn for turn in reversed(thread.get("turns") or [])
+                           if turn.get("status") == "inProgress"), None)
+            if not active:
+                return {"accepted": True, "message": "Задача уже завершена"}
+            if active.get("id") != expected:
+                raise ValueError("Уже выполняется другая задача; обновите чат")
+            rpc.call("turn/interrupt", {"threadId": thread_id, "turnId": expected})
+        self._signal_event()
+        return {"accepted": True, "message": "Остановка запрошена"}
+
+    def task_result(self, thread_id: str | None, turn_id: str) -> dict:
+        thread_id = self._thread_id(thread_id)
+        if not isinstance(turn_id, str) or not VALID_THREAD_ID.fullmatch(turn_id):
+            raise ValueError("Некорректный ID задачи")
+        with self.rpc_session() as rpc:
+            thread = rpc.call("thread/read", {"threadId": thread_id, "includeTurns": True})["thread"]
+        turn = next((t for t in thread.get("turns") or [] if t.get("id") == turn_id), None)
+        if turn is None:
+            return {"found": False}
+        outcome, quota = self.task_outcome_summary(turn)
+        active = next((t for t in reversed(thread.get("turns") or []) if t.get("status") == "inProgress"), None)
+        with self.queue_lock:
+            queued_count = sum(1 for item in self.queued_sends.values() if (item.get("threadId") or self.thread_id) == thread_id)
+        return {"found": True, "turnId": turn_id, "status": turn.get("status"),
+                "activeTurnId": active.get("id", "") if active else "", "queuedCount": queued_count,
+                "outcomeSummary": outcome, "quotaSummary": quota}
+
+    def changes(self, thread_id: str | None, turn_id: str | None = None) -> dict:
+        thread_id = self._thread_id(thread_id)
+        if thread_id in self.draft_threads:
+            return {"changes": [], "truncated": False}
+        with self.rpc_session() as rpc:
+            thread = rpc.call("thread/read", {"threadId": thread_id, "includeTurns": True})["thread"]
+        changes, budget, truncated = [], 512 * 1024, False
+        for turn in reversed(thread.get("turns") or []):
+            if turn_id and turn.get("id") != turn_id:
+                continue
+            for item in turn.get("items") or []:
+                if item.get("type") != "fileChange":
+                    continue
+                for change in item.get("changes") or []:
+                    if len(changes) >= 100 or budget <= 0:
+                        truncated = True
+                        break
+                    diff = str(change.get("diff") or "")
+                    full = len(diff)
+                    diff = diff[:min(budget, 128 * 1024)]
+                    budget -= len(diff)
+                    truncated |= len(diff) < full
+                    changes.append({"id": f"{turn['id']}:{item.get('id')}:{len(changes)}",
+                                    "turnId": turn['id'], "path": str(change.get("path") or ""),
+                                    "kind": change.get("kind"), "status": item.get("status"),
+                                    "diff": diff, "truncated": len(diff) < full})
+        return {"changes": changes, "truncated": truncated}
 
     def usage_limits(self) -> dict:
         with self.rpc_session() as rpc:
@@ -746,12 +880,21 @@ class Bridge:
         return {"deleted": True, "selectedThreadId": selected}
 
     def create_thread(self, cwd: str | None = None) -> dict:
+        project_id = None
         if cwd:
             path = Path(cwd).resolve()
             if not path.is_dir():
                 raise ValueError("Рабочая папка проекта не найдена")
             # A new chat may use only a working directory already visible in this account.
             known = {item.get("cwd") for item in self.list_threads(limit=500)}
+            with self.rpc_session() as rpc:
+                project_page = rpc.call("project/list", {"limit": 100})
+            for project in project_page.get("data", []):
+                for root in project.get("roots", []):
+                    root_path = root.get("path")
+                    if isinstance(root_path, str):
+                        known.add(str(Path(root_path).resolve()))
+                        if str(path) == str(Path(root_path).resolve()): project_id = project.get("id")
             if str(path) not in known:
                 raise ValueError("Проект не найден в списке чатов")
         else:
@@ -764,6 +907,7 @@ class Bridge:
         thread_id = "draft-" + uuid.uuid4().hex
         with self.state_lock:
             self.draft_threads[thread_id] = cwd
+            if project_id: self.project_overrides[thread_id] = project_id
             self.selected_thread_id = thread_id
             self._save_state()
         return {"threadId": thread_id}
@@ -972,6 +1116,9 @@ class Bridge:
                 "pending": self.pending,
                 "sent_messages": self.sent_messages,
                 "queued_sends": self.queued_sends,
+                "thread_modes": self.thread_modes,
+                "published_plans": self.published_plans,
+                "control_operations": self.control_operations,
                 "cancelled_sends": self.cancelled_sends,
                 "last_queue_error": self.last_queue_error,
             }
@@ -996,9 +1143,12 @@ class Bridge:
                     "oldestQueuedSeconds": 0}
         with self.rpc_session() as rpc:
             result = rpc.call(
-                "thread/read", {"threadId": thread_id, "includeTurns": False}
+                "thread/read", {"threadId": thread_id, "includeTurns": True}
             )
         thread = result.get("thread", {})
+        for turn in thread.get("turns") or []:
+            self._remember_agent_relations(thread_id, turn.get("items") or [])
+        active = next((t for t in reversed(thread.get("turns") or []) if t.get("status") == "inProgress"), None)
         state = thread.get("status") or {}
         with self.queue_lock:
             queued = [item for item in self.queued_sends.values()
@@ -1017,6 +1167,8 @@ class Bridge:
             "reasoningEffort": thread.get("reasoningEffort"),
             "status": state.get("type", "unknown") if isinstance(state, dict) else state,
             "codexConnected": True,
+            "activeTurnId": active.get("id", "") if active else "",
+            "pendingRequestCount": len(self.requests(thread_id)["requests"]),
             "queuedCount": queued_count,
             "queueError": self.last_queue_error if queued_count else "",
             "oldestQueuedSeconds": oldest_queued_seconds,
@@ -1051,7 +1203,7 @@ class Bridge:
         return "Субагент" if parts == ["Субагент"] and prefix == "Субагент" else prefix + " · " + " · ".join(parts)
 
     def history(self, thread_id: str | None = None, before: str | None = None,
-                limit: int = 60) -> dict:
+                limit: int = 60, around: str | None = None) -> dict:
         thread_id = self._thread_id(thread_id)
         limit = max(1, min(int(limit), 120))
         if thread_id in self.draft_threads:
@@ -1117,7 +1269,7 @@ class Bridge:
                         text = text.split("Переданные файлы (прочитай по этим путям):", 1)[0].rstrip()
                     if text or attachments or images:
                         turns.append({"id": f"{turn_id}:user:{item_index}", "role": "user",
-                                      "text": text, "attachments": attachments[:20], "images": images[:20],
+                                      "text": text, "clientMessageId": item.get("clientId"), "attachments": attachments[:20], "images": images[:20],
                                       "time": started_at, "turnId": turn_id})
                 elif item_type == "agentMessage":
                     text = item.get("text", "")
@@ -1235,6 +1387,11 @@ class Bridge:
                               "time": completed_at or started_at,
                               "turnId": turn_id})
         end = next((index for index, item in enumerate(turns) if item["id"] == before), len(turns)) if before else len(turns)
+        if around:
+            index = next((i for i, item in enumerate(turns) if item.get("turnId") == around), None)
+            if index is None:
+                raise ValueError("Сообщение не найдено в истории")
+            end = min(len(turns), index + limit // 2)
         start = max(0, end - limit)
         page = turns[start:end]
         return {"threadId": thread_id, "turns": page, "hasMore": start > 0,
@@ -1346,6 +1503,15 @@ class Bridge:
                     if not thread_id:
                         raise RuntimeError("Codex не создал чат")
                 else:
+                    existing = rpc.call("thread/read", {"threadId": thread_id, "includeTurns": True}).get("thread", {})
+                    delivered = next((t for t in existing.get("turns", []) if any(
+                        i.get("type") == "userMessage" and i.get("clientId") == client_message_id for i in t.get("items", []))), None)
+                    if delivered:
+                        response = {"threadId": thread_id, "turnId": delivered["id"], "clientMessageId": client_message_id}
+                        with self.state_lock:
+                            self.sent_messages[client_message_id] = response
+                            self._save_state()
+                        return response
                     # Existing chats must be resumed before another client writes to them.
                     try:
                         rpc.call("thread/resume", {"threadId": thread_id}, timeout=15)
@@ -1377,6 +1543,14 @@ class Bridge:
                     params["model"] = model
                 if effort:
                     params["effort"] = effort
+                mode = self.thread_modes.get(thread_id)
+                if mode:
+                    thread_info = rpc.call("thread/read", {"threadId": thread_id, "includeTurns": False}).get("thread", {})
+                    effective_model = model or thread_info.get("model")
+                    if not effective_model:
+                        raise ValueError("Для режима работы выберите модель")
+                    params["collaborationMode"] = {"mode": mode, "settings": {"model": effective_model,
+                        "reasoning_effort": effort or thread_info.get("reasoningEffort"), "developer_instructions": None}}
                 try:
                     try:
                         usage_before = self.usage_limits()
@@ -1424,10 +1598,46 @@ class Bridge:
             raise ValueError("Сообщение отменено")
         with self.queue_lock:
             if client_message_id in self.queued_sends:
-                return {"queued": True, "threadId": thread_id, "clientMessageId": client_message_id}
+                return {"queued": True, "threadId": thread_id, "clientMessageId": client_message_id,
+                        "nativeSubmissionId": self.queued_sends[client_message_id].get("nativeId") or ""}
         try:
             return self.send(text, file_ids, client_message_id, thread_id, model, effort)
         except BusyError:
+            native_id = None
+            # Native queue has no per-message model/effort overrides. Preserve explicit overrides
+            # in the bridge queue rather than silently changing their meaning.
+            if not model and not effort and not self.thread_modes.get(thread_id) and thread_id not in self.draft_threads:
+                with self.send_lock, self.rpc_session() as rpc:
+                    thread = rpc.call("thread/read", {"threadId": thread_id, "includeTurns": True}).get("thread", {})
+                    delivered = next((t for t in thread.get("turns", []) if any(
+                        i.get("type") == "userMessage" and i.get("clientId") == client_message_id for i in t.get("items", []))), None)
+                    if delivered:
+                        response = {"threadId": thread_id, "turnId": delivered["id"], "clientMessageId": client_message_id}
+                        with self.state_lock:
+                            self.sent_messages[client_message_id] = response
+                            while len(self.sent_messages) > 512: self.sent_messages.pop(next(iter(self.sent_messages)))
+                            for file_id in file_ids: self.pending.pop(file_id, None)
+                            self._save_state()
+                        return response
+                    existing = rpc.call("thread/queue/list", {"threadId": thread_id, "limit": 100}).get("data", [])
+                    prior = next((q for q in existing if q.get("clientUserMessageId") == client_message_id), None)
+                    if prior:
+                        native_id = prior["id"]
+                    else:
+                        with self.state_lock:
+                            attachments = [self.pending.get(k) for k in file_ids]
+                        if any(a is None for a in attachments):
+                            raise ValueError("Вложение не найдено")
+                        inputs = [{"type": "localImage", "path": a["path"]} for a in attachments if a["mimeType"].startswith("image/")]
+                        paths = [a for a in attachments if not a["mimeType"].startswith("image/")]
+                        message = text
+                        if paths:
+                            message += "\n\nПереданные файлы (прочитай по этим путям):\n" + "\n".join(f"- {a['name']}: {a['path']}" for a in paths)
+                        if message.strip(): inputs.append({"type": "text", "text": message})
+                        result = rpc.call("thread/queue/add", {"threadId": thread_id, "input": inputs, "clientUserMessageId": client_message_id})
+                        native_id = result.get("queuedSubmission", {}).get("id")
+                        if not native_id:
+                            raise RuntimeError("Desktop не вернул идентификатор сообщения очереди")
             with self.queue_lock:
                 with self.state_lock:
                     if client_message_id in self.cancelled_sends:
@@ -1442,13 +1652,19 @@ class Bridge:
                         "model": model,
                         "effort": effort,
                         "queuedAt": time.time(),
+                        "nativeId": native_id,
                     }
                     self.last_queue_error = ""
                     self._save_state()
-            return {"queued": True, "threadId": thread_id, "clientMessageId": client_message_id}
+            return {"queued": True, "threadId": thread_id, "clientMessageId": client_message_id, "nativeSubmissionId": native_id or ""}
 
     def cancel_message(self, client_message_id: str) -> dict:
         with self.send_lock:
+            with self.queue_lock:
+                message = self.queued_sends.get(client_message_id)
+            if message and message.get("nativeId"):
+                with self.rpc_session() as rpc:
+                    rpc.call("thread/queue/delete", {"threadId": message["threadId"], "queuedSubmissionId": message["nativeId"]})
             with self.queue_lock:
                 with self.state_lock:
                     if client_message_id in self.sent_messages:
@@ -1470,6 +1686,8 @@ class Bridge:
                 message = self.queued_sends.get(client_message_id)
             if message is None:
                 raise ValueError("Сообщение уже вышло из очереди или отменено")
+            if message.get("nativeId"):
+                raise ValueError("Это очередь Desktop: откройте Инструменты чата → Очередь Desktop")
             thread_id = self._thread_id(message.get("threadId"))
             with self.state_lock:
                 attachments = [self.pending.get(file_id) for file_id in message.get("files", [])]
@@ -1567,6 +1785,19 @@ class Bridge:
                 pending = list(self.queued_sends.items())
             for message_id, message in pending:
                 try:
+                    if message.get("nativeId"):
+                        with self.rpc_session() as rpc:
+                            thread = rpc.call("thread/read", {"threadId": message["threadId"], "includeTurns": True}).get("thread", {})
+                        delivered = next((t for t in thread.get("turns", []) if any(
+                            i.get("type") == "userMessage" and i.get("clientId") == message_id for i in t.get("items", []))), None)
+                        if delivered:
+                            with self.queue_lock, self.state_lock:
+                                self.queued_sends.pop(message_id, None)
+                                self.sent_messages[message_id] = {"threadId": message["threadId"], "turnId": delivered["id"], "clientMessageId": message_id}
+                                for file_id in message.get("files", []): self.pending.pop(file_id, None)
+                                while len(self.sent_messages) > 512: self.sent_messages.pop(next(iter(self.sent_messages)))
+                                self._save_state()
+                        continue
                     self.send(message["text"], message["files"], message_id,
                               message.get("threadId") or self.thread_id,
                               message.get("model"), message.get("effort"))
@@ -1695,6 +1926,16 @@ def main(argv: list[str] | None = None) -> None:
                 return
             if not self.authorized():
                 self.send_json(401, {"error": "Требуется сопряжение"}); return
+            if route in ("/api/requests/respond", "/api/turn/interrupt"):
+                try:
+                    data = self.read_json(256000)
+                    action = bridge.respond_request if route == "/api/requests/respond" else bridge.interrupt_turn
+                    self.send_json(200, action(data))
+                except (ValueError, RpcError) as exc:
+                    self.send_json(409, {"error": str(exc)})
+                except Exception as exc:
+                    self.send_json(503, {"error": str(exc)})
+                return
             if route == "/api/subagents/action":
                 try:
                     self.send_json(200, bridge.subagent_action(self.read_json(128000)))
@@ -1722,6 +1963,15 @@ def main(argv: list[str] | None = None) -> None:
                 except ValueError as exc:
                     self.send_json(400, {"error": str(exc)})
                 except RuntimeError as exc:
+                    self.send_json(409, {"error": str(exc)})
+                return
+            if route == "/api/control/action":
+                try:
+                    data = self.read_json(128 * 1024)
+                    self.send_json(200, bridge.controls.action(data.get("threadId"), data.get("action", ""), data))
+                except ValueError as exc:
+                    self.send_json(400, {"error": str(exc)})
+                except (RpcError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
                     self.send_json(409, {"error": str(exc)})
                 return
             if route == "/api/unpair":
@@ -1892,6 +2142,13 @@ def main(argv: list[str] | None = None) -> None:
                     agent_id = query.get("agentId", [""])[0]
                     bridge.subagent_check(thread_id, agent_id)
                     self.send_json(200, bridge.history(agent_id, query.get("before", [None])[0]))
+                elif route == "/api/control":
+                    q = parse_qs(parsed.query)
+                    self.send_json(200, bridge.controls.read(thread_id, q.get("section", [""])[0],
+                        {k:v[0] for k,v in q.items()}))
+                elif route == "/api/requests": self.send_json(200, bridge.requests(thread_id))
+                elif route == "/api/task": self.send_json(200, bridge.task_result(thread_id, parse_qs(parsed.query).get("turnId", [""])[0]))
+                elif route == "/api/changes": self.send_json(200, bridge.changes(thread_id, parse_qs(parsed.query).get("turnId", [None])[0]))
                 elif route == "/api/projects": self.send_json(200, bridge.projects())
                 elif route == "/api/threads": self.send_json(200, {"threads": bridge.list_threads(limit=500),
                                                                     "selectedThreadId": bridge.selected_thread_id})
