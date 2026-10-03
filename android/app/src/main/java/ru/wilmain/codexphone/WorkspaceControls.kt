@@ -47,7 +47,13 @@ private val ControlFormSaver = Saver<ControlForm?, String>(
 internal fun WorkspaceControls(threadId: String, title: String,
     initialTurn: String = "", request: suspend (String, JSONObject?) -> JSONObject,
     onClose: () -> Unit, onSelect: (String) -> Unit,
-    onJump: (String) -> Unit, onChanged: () -> Unit) {
+    onJump: (String) -> Unit, onChanged: () -> Unit, compatibilityNote: String = "") {
+    if(compatibilityNote.isNotBlank()) {
+        Scaffold(topBar={UiScreenHeader(title="Инструменты чата",subtitle=title,onBack=onClose)}) { padding ->
+            Text(compatibilityNote,Modifier.padding(padding).padding(24.dp),color=MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        return
+    }
     var section by rememberSaveable(threadId) { mutableStateOf("chat") }
     var query by rememberSaveable(threadId) { mutableStateOf("") }
     var data by remember(threadId, section) { mutableStateOf(JSONObject()) }
@@ -79,6 +85,10 @@ internal fun WorkspaceControls(threadId: String, title: String,
                 val result = request("control/action", body.put("threadId", threadId).put("action", action))
                 form = null; revision++; notice = "Готово"; onChanged()
                 if (action in listOf("fork", "archive") && result.optString("threadId").isNotBlank()) onSelect(result.optString("threadId"))
+                if (action == "plan-create") {
+                    if (result.optString("threadId").isNotBlank() && result.optString("threadId") != threadId) onSelect(result.optString("threadId"))
+                    onClose()
+                }
                 if (action == "review") { notice = "Ревью запущено. Результат появится в чате"; onClose() }
             } catch (cancel: CancellationException) { throw cancel }
             catch (e: Exception) { error = e.message ?: "Не удалось выполнить действие" }
@@ -155,20 +165,24 @@ internal fun WorkspaceControls(threadId: String, title: String,
                             FilterChip(selected=data.optString("selectedMode")==id,enabled=!busy,
                                 onClick={execute("mode",JSONObject().put("mode",id))},label={Text(if(id=="plan") "Планирование" else if(id=="default") "Обычный" else mode.optString("name",id))})
                         }
+                        item {
+                            Button(onClick={open(ControlForm("plan-create", "Создать новый план", "Опишите задачу. Codex составит новый план в этом чате. Запуск расходует лимиты; предыдущие планы сохранятся в истории.", listOf("text" to "Что нужно распланировать")))},
+                                enabled=!busy && !loading && (data.optJSONArray("modes")?:JSONArray()).objects().any { it.optString("mode")=="plan" },
+                                modifier=Modifier.heightIn(min=48.dp)) { Text("Создать новый план") }
+                        }
                         val published=(data.optJSONArray("publishedPlans")?:JSONArray()).objects()
-                        items(published) { plan ->
-                            if(plan.optString("explanation").isNotBlank()) Text(plan.optString("explanation"))
-                            (plan.optJSONArray("steps")?:JSONArray()).objects().forEach { step ->
-                                val state = when(step.optString("status")){"completed"->"Готово";"inProgress"->"Выполняется";else->"Ожидает"}
-                                Text(state, style=MaterialTheme.typography.labelMedium, color=MaterialTheme.colorScheme.secondary)
-                                Text(step.optString("step"),modifier=Modifier.padding(bottom=8.dp))
-                            }
-                        }
                         val plans=(data.optJSONArray("plans")?:JSONArray()).objects()
-                        if (plans.isEmpty() && published.isEmpty() && !loading) item { Text("План ещё не опубликован") }
-                        items(plans) { plan ->
-                            SelectionContainer { MarkdownContent(plan.optString("text")) }
+                        val current=data.optString("currentPlanTurnId").takeUnless { it.isBlank() || it=="null" }
+                            ?: plans.lastOrNull()?.optString("turnId") ?: published.lastOrNull()?.optString("turnId")
+                        item { Text("Текущий план", style=MaterialTheme.typography.titleLarge) }
+                        val currentPlans=plans.filter { it.optString("turnId")==current }
+                        val currentPublished=published.filter { it.optString("turnId")==current }
+                        if (currentPlans.isEmpty() && currentPublished.isEmpty() && !loading && error.isBlank()) item {
+                            Text(if(current==null) "План ещё не создан" else if(data.optString("currentPlanStatus") in listOf("inProgress", "active"))
+                                "Codex составляет новый план. Ход работы доступен в чате." else "В этом ходе план не опубликован. Посмотрите ответ в чате.")
                         }
+                        items(currentPlans) { plan -> SelectionContainer { MarkdownContent(plan.optString("text")) } }
+                        items(currentPublished) { plan -> PublishedPlanContent(plan) }
                         val goal=data.optJSONObject("goal")
                         item { Text("Цель",style=MaterialTheme.typography.titleMedium) }
                         if (goal != null) {
@@ -255,9 +269,19 @@ internal fun WorkspaceControls(threadId: String, title: String,
             }
         },confirmButton={TextButton(enabled=!busy && f.fields.all{it.first == "tokenBudget" || JSONObject(fields).optString(it.first).isNotBlank()},onClick={
             val body=JSONObject(f.extra.toString());val v=JSONObject(fields);v.keys().forEach{body.put(it,v.get(it))};body.put("confirmed",true);execute(f.action,body)
-        }){Text(if(busy)"Выполняется…" else "Подтвердить")}},dismissButton={TextButton(enabled=!busy,onClick={form=null}){Text("Отмена")}})
+        }){Text(if(busy)"Выполняется…" else if(f.action=="plan-create") "Создать план" else "Подтвердить")}},dismissButton={TextButton(enabled=!busy,onClick={form=null}){Text("Отмена")}})
     }
 }
 
 @Composable
 private fun Modifier.verticalScrollCompat(): Modifier = this.then(Modifier.verticalScroll(rememberScrollState()))
+
+@Composable
+private fun PublishedPlanContent(plan: JSONObject) {
+    if(plan.optString("explanation").isNotBlank()) Text(plan.optString("explanation"))
+    (plan.optJSONArray("steps")?:JSONArray()).objects().forEach { step ->
+        val state=when(step.optString("status")){"completed"->"Готово";"inProgress"->"Выполняется";else->"Ожидает"}
+        Text(state,style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.secondary)
+        Text(step.optString("step"),modifier=Modifier.padding(bottom=8.dp))
+    }
+}

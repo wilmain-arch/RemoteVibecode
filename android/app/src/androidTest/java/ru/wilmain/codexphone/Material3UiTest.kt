@@ -300,6 +300,57 @@ class Material3UiTest {
         compose.onNodeWithText("README.md").assertIsDisplayed()
         screenshot("files-ime")
     }
+    @Test fun advancedFilesSearchAndPaging() {
+        val calls=mutableListOf<List<String>>()
+        compose.setContent {
+            MaterialTheme(colorScheme = lightPalette, typography = appTypography) {
+                WorkspaceFilesScreen(
+                projectName = "Приложение",
+                rootName = "Приложение",
+                threadId = "test",
+                path = "",
+                entries = listOf(WorkspaceEntry("assets", "assets", true, 0), WorkspaceEntry("README.md", "README.md", false, 4096), WorkspaceEntry("app.kt", "app.kt", false, 12288), WorkspaceEntry("preview.png", "preview.png", false, 6144)),
+                loading = false,
+                error = "",
+                truncated = false,
+                previewPath = "",
+                previewText = "",
+                previewNote = "",
+                previewLoading = false,
+                fileStatus = "",
+                outboxFiles = emptyList(),
+                outboxLoading = false,
+                outboxError = "",
+                transferringFileId = "",
+                transferProgress = null,
+                pendingFiles = emptyList(),
+                loadImage = { fixtureImage() },
+                onCancelTransfer = {},
+                onClose = {},
+                onBrowse = {},
+                onPreview = {},
+                onAsk = {},
+                onSaveWorkspace = {},
+                onSaveOutbox = {},
+                onFetchOutbox = {},
+                onAttach = {},
+                onProjectFile = {},
+                nextCursor = "page-2",
+                onListing = { path, query, hidden, service, cursor -> calls.add(listOf(path,query,hidden.toString(),service.toString(),cursor)) },
+                )
+            }
+        }
+        compose.waitUntil { calls.isNotEmpty() }
+        val previousHidden=calls.last()[2]
+        compose.onNodeWithText("Скрытые").performClick()
+        compose.waitUntil { calls.last()[2]!=previousHidden }
+        compose.onNode(hasSetTextAction()).performTextInput("README")
+        compose.waitUntil { calls.last()[1]=="README" }
+        compose.onNode(hasScrollAction()).performScrollToNode(hasText("Показать ещё"))
+        compose.onNodeWithText("Показать ещё").performClick()
+        compose.waitUntil { calls.last()[4]=="page-2" }
+        screenshot("completion-files")
+    }
     @Test fun subagentsRecoverFromIsolatedServerFailure() {
         val certificate = okhttp3.tls.HeldCertificate.Builder().commonName("localhost").addSubjectAlternativeName("localhost").build()
         val serverTls = okhttp3.tls.HandshakeCertificates.Builder().heldCertificate(certificate).build()

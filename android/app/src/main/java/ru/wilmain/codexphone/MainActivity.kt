@@ -50,6 +50,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -127,7 +128,7 @@ private fun readLocalQueue(prefs: android.content.SharedPreferences): List<Local
             if (item.isNull("model")) null else item.optString("model").ifBlank { null },
             if (item.isNull("effort")) null else item.optString("effort").ifBlank { null },
             item.optBoolean("acceptedByBridge"), item.optBoolean("cancelRequested"),
-            item.optString("deliveredTurnId"), item.optBoolean("steered"), item.optString("nativeSubmissionId"))
+            item.optString("deliveredTurnId"), item.optBoolean("steered"), item.optString("nativeSubmissionId"), item.optString("queueState", "queued"))
     }
 }.getOrDefault(emptyList())
 
@@ -141,7 +142,7 @@ private fun saveLocalQueue(prefs: android.content.SharedPreferences, messages: L
             .put("acceptedByBridge", message.acceptedByBridge)
             .put("cancelRequested", message.cancelRequested)
             .put("deliveredTurnId", message.deliveredTurnId)
-            .put("steered", message.steered).put("nativeSubmissionId", message.nativeSubmissionId))
+            .put("steered", message.steered).put("nativeSubmissionId", message.nativeSubmissionId).put("queueState",message.queueState))
     }
     prefs.edit().putString("localQueue", array.toString()).apply()
 }
@@ -346,6 +347,11 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
     val outboxFiles = remember { mutableStateListOf<RemoteFile>() }
     var outboxLoading by remember { mutableStateOf(false) }
     var outboxError by remember { mutableStateOf("") }
+    var workspaceAdvanced by remember { mutableStateOf(false) }
+    var compatibilityNote by remember { mutableStateOf("Проверяем совместимость агента…") }
+    var workspaceNextCursor by remember { mutableStateOf("") }
+    var workspaceRevision by remember { mutableIntStateOf(0) }
+    val workspacePrefs = remember { context.getSharedPreferences("workspace-display", 0) }
     var workspaceRoot by remember { mutableStateOf("") }
     var workspacePath by rememberSaveable { mutableStateOf("") }
     var workspaceEntries by remember { mutableStateOf<List<WorkspaceEntry>>(emptyList()) }
@@ -541,6 +547,13 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
         try {
             val pair = withReachableHost { root ->
                 withContext(Dispatchers.IO) {
+                    try {
+                        val caps=requestJson(client,"$root/api/capabilities",token)
+                        val compatible=caps.optInt("protocolVersion")==1
+                        workspaceAdvanced=compatible && caps.optJSONObject("features")?.optBoolean("workspacePaging")==true
+                        compatibilityNote=if(compatible && caps.optJSONObject("features")?.optBoolean("controls")==true) "" else "Версия агента несовместима. Обновите агент на ПК."
+                    } catch(cancel:CancellationException) { throw cancel }
+                    catch(error:Exception) { workspaceAdvanced=false;compatibilityNote="Совместимость не подтверждена. Обновите агент на ПК или повторите подключение." }
                     requestJson(client, "$root/api/status$threadQuery", token) to
                         requestJson(client, "$root/api/history$threadQuery", token)
                 }
@@ -586,6 +599,10 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
                     val cancelledIds = (0 until cancelled.length()).mapTo(HashSet()) { cancelled.optString(it) }
                     localQueue.removeAll { it.id in cancelledIds }
                     val receipts = snapshot.optJSONObject("receipts") ?: JSONObject()
+                    val tracked = (snapshot.optJSONArray("nativeTracking")?:JSONArray()).objects().associateBy { it.optString("id") }
+                    for(index in localQueue.indices) tracked[localQueue[index].id]?.let { msg ->
+                        localQueue[index]=localQueue[index].copy(text=msg.optString("text",localQueue[index].text), queueState=msg.optString("queueState","queued"))
+                    }
                     for (index in localQueue.indices) {
                         receipts.optJSONObject(localQueue[index].id)?.let { receipt ->
                             localQueue[index] = localQueue[index].copy(deliveredTurnId = receipt.optString("turnId"))
@@ -638,32 +655,37 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
         }
     }
 
-    suspend fun browseWorkspace(path: String, clearPreview: Boolean = true) {
+    suspend fun browseWorkspace(path: String, clearPreview: Boolean = true, query: String = "",
+        hidden: Boolean = workspacePrefs.getBoolean("hidden",false), service: Boolean = workspacePrefs.getBoolean("service",false), cursor: String = "") {
+        val revision = ++workspaceRevision
         val thread = selectedThreadId
         workspacePath = path
         workspaceLoading = true
         workspaceError = ""
-        workspaceEntries = emptyList()
+        if(cursor.isBlank()) { workspaceEntries = emptyList(); workspaceNextCursor = "" }
         if (clearPreview) previewPath = ""
         try {
             val result = withReachableHost { root -> withContext(Dispatchers.IO) {
-                requestJson(client, "$root/api/workspace?threadId=${Uri.encode(thread)}&path=${Uri.encode(path)}", token)
+                requestJson(client, "$root/api/workspace?threadId=${Uri.encode(thread)}&path=${Uri.encode(path)}&query=${Uri.encode(query)}&hidden=$hidden&service=$service&cursor=${Uri.encode(cursor)}", token)
             } }
-            if (thread == selectedThreadId && path == workspacePath) {
+            if (thread == selectedThreadId && path == workspacePath && revision == workspaceRevision) {
                 workspaceRoot = result.optString("rootName")
                 val entries = result.optJSONArray("entries") ?: JSONArray()
-                workspaceEntries = (0 until entries.length()).mapNotNull { index ->
+                val page = (0 until entries.length()).mapNotNull { index ->
                     val item = entries.optJSONObject(index) ?: return@mapNotNull null
                     WorkspaceEntry(item.optString("name"), item.optString("path"),
-                        item.optBoolean("isDirectory"), item.optLong("size"))
+                        item.optBoolean("isDirectory"), item.optLong("size"),item.optBoolean("available",true),item.optString("blockedReason"),item.optBoolean("isLink"))
                 }
+                workspaceEntries = (if(cursor.isBlank()) page else workspaceEntries + page).distinctBy { it.path }
+                workspaceNextCursor = result.optString("nextCursor").takeUnless { it=="null" }.orEmpty()
                 workspaceTruncated = result.optBoolean("truncated")
             }
-        } catch (error: Exception) {
-            if (thread == selectedThreadId && path == workspacePath)
+        } catch(cancel: CancellationException) { throw cancel }
+        catch (error: Exception) {
+            if (thread == selectedThreadId && path == workspacePath && revision == workspaceRevision)
                 workspaceError = "Не удалось открыть папку: ${error.message}"
         } finally {
-            if (thread == selectedThreadId && path == workspacePath) workspaceLoading = false
+            if (thread == selectedThreadId && path == workspacePath && revision == workspaceRevision) workspaceLoading = false
         }
     }
 
@@ -962,6 +984,7 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
         try {
             for (message in localQueue.toList()) {
                 if (message.deliveredTurnId.isNotBlank()) continue
+                if(message.acceptedByBridge && !message.cancelRequested) continue
                 if (message.cancelRequested) {
                     cancelQueued(message.id)
                     continue
@@ -1344,6 +1367,9 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
                 fileStatus = ""
                 savePicker.launch(file.name)
             },
+            workspaceNextCursor = workspaceNextCursor,
+            compatibilityNote = compatibilityNote,
+            onWorkspaceQuery = if(workspaceAdvanced) { path, query, hidden, service, cursor -> scope.launch { browseWorkspace(path, false, query, hidden, service, cursor) }; Unit } else null,
             onBrowseWorkspace = { path -> scope.launch { browseWorkspace(path) } },
             onPreviewWorkspace = { path -> scope.launch { previewWorkspace(path) } },
             onAskWorkspace = { path ->

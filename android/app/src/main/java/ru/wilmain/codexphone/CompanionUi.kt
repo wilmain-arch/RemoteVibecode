@@ -124,7 +124,7 @@ internal data class RemoteFile(
     val id: String, val name: String, val size: Long,
     val workspacePath: String = "", val threadId: String = "",
 )
-internal data class WorkspaceEntry(val name: String, val path: String, val isDirectory: Boolean, val size: Long)
+internal data class WorkspaceEntry(val name: String, val path: String, val isDirectory: Boolean, val size: Long, val available: Boolean = true, val blockedReason: String = "", val isLink: Boolean = false)
 internal data class LocalMessage(
     val id: String, val text: String, val files: List<String>,
     val threadId: String = "", val model: String? = null, val effort: String? = null,
@@ -133,6 +133,7 @@ internal data class LocalMessage(
     val deliveredTurnId: String = "",
     val steered: Boolean = false,
     val nativeSubmissionId: String = "",
+    val queueState: String = "queued",
 )
 internal data class ThreadItem(val id: String, val title: String, val status: String, val updatedAt: Long)
 internal data class ProjectGroup(val id: String, val name: String, val cwd: String?, val threads: List<ThreadItem>)
@@ -256,6 +257,9 @@ internal fun CompanionUi(
     taskNotifications: Boolean = false,
     onTaskNotifications: () -> Unit = {},
     onJumpHistory: (String) -> Unit = {},
+    workspaceNextCursor: String = "",
+    onWorkspaceQuery: ((String, String, Boolean, Boolean, String) -> Unit)? = null,
+    compatibilityNote: String = "",
 ) {
     var controlsOpen by rememberSaveable(selectedThreadId) { mutableStateOf(false) }
     var controlsTurn by rememberSaveable(selectedThreadId) { mutableStateOf("") }
@@ -369,7 +373,7 @@ internal fun CompanionUi(
             onClose = { controlsOpen = false },
             onSelect = { controlsOpen = false; onSelectThread(it) },
             onJump = { focusTurn = it; onJumpHistory(it) },
-            onChanged = { onRefreshCatalog(); onRetryHistory() })
+            onChanged = { onRefreshCatalog(); onRetryHistory() }, compatibilityNote=compatibilityNote)
         return
     }
     if (changesOpen && paired) {
@@ -402,6 +406,7 @@ internal fun CompanionUi(
             pendingFiles = attachments,
             onCancelTransfer = onCancelTransfer,
             loadImage = loadImage,
+            nextCursor = workspaceNextCursor, onListing = onWorkspaceQuery,
             onClose = { filesOpen = false }, onBrowse = onBrowseWorkspace,
             onPreview = onPreviewWorkspace,
             onAsk = { path -> onAskWorkspace(path); filesOpen = false },
@@ -789,7 +794,7 @@ internal fun CompanionUi(
                                 Column(Modifier.padding(13.dp)) {
                                     Text(if (item.deliveredTurnId.isNotBlank())
                                         (if (item.steered) "Корректировка отправлена" else "Отправлено")
-                                        else "В очереди", style = MaterialTheme.typography.labelSmall,
+                                        else if (item.queueState == "checking") "Проверяем состояние" else "В очереди", style = MaterialTheme.typography.labelSmall,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.onSecondaryContainer)
                                     Spacer(Modifier.height(5.dp))
@@ -797,16 +802,17 @@ internal fun CompanionUi(
                                         style = MaterialTheme.typography.bodyLarge)
                                     Spacer(Modifier.height(4.dp))
                                     Text(if (item.deliveredTurnId.isNotBlank()) "Ожидаю отображения в истории"
-                                        else if (item.cancelRequested) "Отменяю…" else if (item.acceptedByBridge)
+                                        else if (item.cancelRequested) "Отменяю…" else if (item.queueState == "checking") "Запись исчезла из очереди Desktop. Проверяем доставку или отмену" else if (item.acceptedByBridge)
                                         "В очереди Codex" else "Ожидает сети",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    if (item.nativeSubmissionId.isNotBlank() && item.deliveredTurnId.isBlank()) Text("Корректировка этой очереди недоступна в Desktop", style = MaterialTheme.typography.labelSmall)
                                     Row {
                                         if (item.acceptedByBridge && !item.cancelRequested && item.deliveredTurnId.isBlank() && item.nativeSubmissionId.isBlank())
                                             TextButton(onClick = { onSteerQueued(item) }) {
                                                 Text("Корректировать сейчас")
                                             }
-                                        if (item.deliveredTurnId.isBlank()) TextButton(onClick = { onCancelQueued(item) }, enabled = !item.cancelRequested) {
+                                        if (item.deliveredTurnId.isBlank()) TextButton(onClick = { onCancelQueued(item) }, enabled = !item.cancelRequested && item.queueState != "checking") {
                                             Text("Отменить")
                                         }
                                     }

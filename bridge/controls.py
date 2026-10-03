@@ -30,6 +30,7 @@ class Controls:
     def __init__(self, bridge):
         self.bridge = bridge
         self.lock = threading.RLock()
+        self.plan_lock = threading.Lock()
 
     def idle(self, rpc, tid):
         thread = rpc.call('thread/read', {'threadId': tid, 'includeTurns': True}).get('thread', {})
@@ -50,7 +51,7 @@ class Controls:
         tid = b._thread_id(tid)
         if section == 'git':
             return self.git(tid, 'status', data)
-        if tid in b.draft_threads and section not in ('archive', 'projects'):
+        if tid in b.draft_threads and section not in ('archive', 'projects', 'plan'):
             return {'data': [], 'note': 'Сначала отправьте первое сообщение в этом чате'}
         with b.rpc_session() as rpc:
             if section == 'archive':
@@ -61,18 +62,47 @@ class Controls:
                 return rpc.call('thread/searchOccurrences', {'threadId': tid, 'searchTerm': q,
                     'limit': 30, 'cursor': data.get('cursor') or None})
             if section == 'plan':
+                if tid in b.draft_threads:
+                    return {'plans': [], 'publishedPlans': [], 'goal': None,
+                            'modes': rpc.call('collaborationMode/list', {}).get('data', []),
+                            'selectedMode': b.thread_modes.get(tid, 'default')}
                 thread = rpc.call('thread/read', {'threadId': tid, 'includeTurns': True}).get('thread', {})
-                plans = [dict(item, turnId=t.get('id')) for t in thread.get('turns', [])
-                         for item in t.get('items', []) if item.get('type') == 'plan']
                 with b.state_lock:
-                    published = [dict(p, turnId=turn) for turn,p in b.published_plans.items() if p.get('threadId') == tid][-10:]
-                return {'plans': plans[-10:], 'publishedPlans': published, 'goal': rpc.call('thread/goal/get', {'threadId': tid}).get('goal'),
+                    requested = b.plan_boundaries.get(tid)
+                    # Recover accepted requests from receipts after a lost response or restart.
+                    order = {t.get('id'): n for n, t in enumerate(thread.get('turns', []))}
+                    for opid, op in reversed(list(b.control_operations.items())):
+                        receipt = op.get('result') or b.sent_messages.get(opid, {})
+                        if (op.get('action') == 'plan-create' and receipt.get('threadId') == tid and receipt.get('turnId')
+                                    and (not requested or order.get(receipt['turnId'], -1) > order.get(requested, -1))):
+                            requested = receipt['turnId']
+                            b.plan_boundaries[tid] = requested
+                            b._save_state()
+                            break
+                    published = [dict(p, turnId=turn) for turn,p in b.published_plans.items() if p.get('threadId') == tid]
+                turns = thread.get('turns', [])
+                if requested:
+                    boundary = next((n for n, t in enumerate(turns) if t.get('id') == requested), None)
+                    turns = turns[boundary:] if boundary is not None else []
+                    allowed = {t.get('id') for t in turns}
+                    published = [p for p in published if p['turnId'] in allowed]
+                plans = [dict(item, turnId=t.get('id')) for t in turns
+                         for item in t.get('items', []) if item.get('type') == 'plan']
+                plan_turns = {p['turnId'] for p in plans + published}
+                if requested:
+                    plan_turns.add(requested)
+                current = next((t.get('id') for t in reversed(thread.get('turns', [])) if t.get('id') in plan_turns), requested)
+                current_status = next((t.get('status') for t in thread.get('turns', []) if t.get('id') == current), None)
+                return {'currentPlanTurnId': current, 'currentPlanStatus': current_status, 'plans': plans[-10:], 'publishedPlans': published, 'goal': rpc.call('thread/goal/get', {'threadId': tid}).get('goal'),
                         'modes': rpc.call('collaborationMode/list', {}).get('data', []),
                         'selectedMode': b.thread_modes.get(tid, 'default')}
             if section == 'queue':
                 result = rpc.call('thread/queue/list', {'threadId': tid, 'limit': 50,
                     'cursor': data.get('cursor') or None})
+                if hasattr(b, 'reconcile_native_queue') and not data.get('cursor'):
+                    b.reconcile_native_queue(tid, rpc, result)
                 with b.queue_lock:
+                    result['nativeTracking'] = [dict(m, id=k) for k,m in b.queued_sends.items() if m.get('threadId') == tid and m.get('nativeId')]
                     result['bridgeQueue'] = [dict(m, id=k) for k,m in b.queued_sends.items() if m.get('threadId') == tid and not m.get('nativeId')]
                 with b.state_lock:
                     result['cancelledIds'] = list(b.cancelled_sends)[-512:]
@@ -83,6 +113,8 @@ class Controls:
         raise ValueError('Неизвестный раздел')
 
     def action(self, tid, action, data):
+        if action == 'plan-create':
+            return self._create_plan(tid, data)
         opid = data.get('operationId')
         if action not in ('fork', 'revert') or opid is None:
             return self._perform(tid, action, data)
@@ -100,6 +132,40 @@ class Controls:
                 while len(self.bridge.control_operations)>200:
                     self.bridge.control_operations.pop(next(iter(self.bridge.control_operations)))
                 self.bridge._save_state()
+            return result
+
+    def _create_plan(self, tid, data):
+        b = self.bridge
+        tid = b._thread_id(tid)
+        opid = ident(data, 'operationId')
+        text = value(data, 'text', 100000)
+        if data.get('confirmed') is not True:
+            raise ValueError('Создание плана расходует лимиты; подтвердите запуск')
+        fingerprint = hashlib.sha256(json.dumps({'threadId': tid, 'text': text}, sort_keys=True).encode()).hexdigest()
+        with self.plan_lock:
+            prior = b.control_operations.get(opid)
+            if prior and prior['fingerprint'] != fingerprint:
+                raise ValueError('Идентификатор операции уже использован для другого запроса')
+            if prior and prior.get('result'):
+                return prior['result']
+            with b.rpc_session() as rpc:
+                if not any(m.get('mode') == 'plan' for m in rpc.call('collaborationMode/list', {}).get('data', [])):
+                    raise ValueError('Планирование недоступно в установленном Codex')
+            # Persist the request binding before launch; the send receipt reconciles a lost response.
+            with b.state_lock:
+                b.control_operations[opid] = {'fingerprint': fingerprint, 'action': 'plan-create', 'threadId': tid}
+                while len(b.control_operations) > 200:
+                    b.control_operations.pop(next(iter(b.control_operations)))
+                b._save_state()
+            result = b.send(text, [], opid, tid, collaboration_mode='plan', require_idle=True)
+            with b.state_lock:
+                b.control_operations[opid] = {'fingerprint': fingerprint, 'action': 'plan-create',
+                    'threadId': result.get('threadId', tid), 'result': result}
+                if result.get('turnId'):
+                    b.plan_boundaries[result.get('threadId', tid)] = result['turnId']
+                while len(b.control_operations) > 200:
+                    b.control_operations.pop(next(iter(b.control_operations)))
+                b._save_state()
             return result
 
     def _perform(self, tid, action, data, lock_held=False):

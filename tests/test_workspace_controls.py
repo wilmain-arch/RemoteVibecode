@@ -22,7 +22,7 @@ class FakeRpc:
 
 class FakeBridge:
     def __init__(self, root):
-        self.root=root;self.rpc=FakeRpc();self.draft_threads={};self.queued_sends={};self.cancelled_sends={};self.thread_modes={};self.sent_messages={};self.pending={};self.published_plans={};self.control_operations={}
+        self.root=root;self.rpc=FakeRpc();self.draft_threads={};self.queued_sends={};self.cancelled_sends={};self.thread_modes={};self.sent_messages={};self.pending={};self.published_plans={};self.control_operations={};self.plan_boundaries={}
         self.queue_lock=threading.Lock();self.state_lock=threading.RLock();self.send_lock=threading.Lock();self.saved=0
     def _thread_id(self,tid):
         return ident({'id':tid or 'root'},'id')
@@ -39,6 +39,87 @@ class ControlsTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.root=Path(self.temp.name)
         self.b=FakeBridge(self.root);self.c=Controls(self.b)
+    def test_new_plan_confirmation_retry_and_collision(self):
+        calls=[]
+        def send(text, files, mid, tid, **kwargs):
+            calls.append(kwargs)
+            return {'threadId':tid,'turnId':'new-plan','clientMessageId':mid}
+        self.b.send=send
+        body={'text':'Составь план', 'operationId':'plan-id'}
+        with self.assertRaises(ValueError): self.c.action('root','plan-create',body)
+        body['confirmed']=True
+        first=self.c.action('root','plan-create',body)
+        self.assertEqual(self.c.action('root','plan-create',body),first)
+        self.assertEqual(calls,[{'collaboration_mode':'plan','require_idle':True}])
+        self.assertEqual(self.b.thread_modes,{})
+        self.assertEqual(self.b.plan_boundaries['root'],'new-plan')
+        with self.assertRaises(ValueError): self.c.action('root','plan-create',dict(body,text='Другой план'))
+        # A new controller can reconcile the persisted result without another launch.
+        self.assertEqual(Controls(self.b).action('root','plan-create',body),first)
+        self.assertEqual(len(calls),1)
+
+    def test_new_plan_reconciles_lost_response_without_relaunch(self):
+        launched=[]
+        def send(text, files, mid, tid, **kwargs):
+            if mid in self.b.sent_messages: return self.b.sent_messages[mid]
+            launched.append(mid)
+            self.b.sent_messages[mid]={'threadId':tid,'turnId':'accepted-plan'}
+            raise RuntimeError('Lost response')
+        self.b.send=send
+        body={'text':'Plan', 'operationId':'lost-response','confirmed':True}
+        with self.assertRaises(RuntimeError): self.c.action('root','plan-create',body)
+        result=Controls(self.b).action('root','plan-create',body)
+        self.assertEqual(result['turnId'],'accepted-plan')
+        self.assertEqual(launched,['lost-response'])
+
+    def test_failed_plan_preserves_boundary_and_lost_reply_recovers_new_one(self):
+        self.b.plan_boundaries['root']='old'
+        body={'text':'Plan', 'operationId':'recover-new','confirmed':True}
+        def fail(*args, **kwargs): raise RuntimeError('Not accepted')
+        self.b.send=fail
+        with self.assertRaises(RuntimeError): self.c.action('root','plan-create',body)
+        self.assertEqual(self.b.plan_boundaries['root'],'old')
+        self.b.sent_messages['recover-new']={'threadId':'root','turnId':'accepted'}
+        original=self.b.rpc.call
+        def call(method, params):
+            if method=='thread/read': return {'thread':{'turns':[
+                {'id':'old','items':[{'type':'plan','text':'Old'}]},
+                {'id':'accepted','status':'inProgress','items':[]}]}}
+            return original(method,params)
+        self.b.rpc.call=call
+        data=Controls(self.b).read('root','plan',{})
+        self.assertEqual(data['currentPlanTurnId'],'accepted')
+        self.assertEqual(data['plans'],[])
+        self.assertEqual(self.b.plan_boundaries['root'],'accepted')
+
+    def test_plan_boundary_survives_receipt_eviction_and_other_chats(self):
+        original=self.b.rpc.call
+        def call(method, params):
+            if method=='thread/read': return {'thread':{'turns':[
+                {'id':'old','status':'completed','items':[{'type':'plan','text':'Old'}]},
+                {'id':'accepted','status':'inProgress','items':[]},
+                {'id':'desktop','status':'completed','items':[{'type':'plan','text':'Desktop'}]}]}}
+            return original(method,params)
+        self.b.rpc.call=call
+        self.b.plan_boundaries['root']='accepted'
+        self.b.control_operations.clear();self.b.sent_messages.clear()
+        data=Controls(self.b).read('root','plan',{})
+        self.assertEqual([p['text'] for p in data['plans']],['Desktop'])
+        self.assertEqual(data['currentPlanTurnId'],'desktop')
+        self.assertEqual(len(self.c.read('other','plan',{})['plans']),2)
+
+    def test_current_plan_follows_turn_order_and_preserves_history(self):
+        original=self.b.rpc.call
+        def call(method, params):
+            if method=='thread/read': return {'thread':{'turns':[
+                {'id':'old','status':'completed','items':[{'type':'plan','text':'Old'}]},
+                {'id':'new','status':'completed','items':[{'type':'plan','text':'New'}]}]}}
+            return original(method,params)
+        self.b.rpc.call=call
+        data=self.c.read('root','plan',{})
+        self.assertEqual(data['currentPlanTurnId'],'new')
+        self.assertEqual([p['text'] for p in data['plans']],['Old','New'])
+
     def test_rename_is_bounded(self):
         self.c.action('root','rename',{'name':'Русское название'})
         self.assertEqual(self.b.rpc.calls[-1],('thread/name/set',{'threadId':'root','name':'Русское название'}))

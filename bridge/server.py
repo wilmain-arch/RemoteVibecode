@@ -30,10 +30,12 @@ try:
     from .adb_devices import AdbDevices
     from .interactions import InteractionInbox
     from .controls import Controls
+    from .workspace_listing import listing
 except ImportError:
     from adb_devices import AdbDevices
     from interactions import InteractionInbox
     from controls import Controls
+    from workspace_listing import listing
 
 try:
     from PIL import Image, ImageOps
@@ -208,6 +210,7 @@ class Bridge:
         self.thread_modes = saved.get("thread_modes", {})
         self.published_plans = saved.get("published_plans", {})
         self.control_operations = saved.get("control_operations", {})
+        self.plan_boundaries = saved.get("plan_boundaries", {})
         self.controls = Controls(self)
         self.cancelled_sends: dict[str, float] = saved.get("cancelled_sends", {})
         self.last_queue_error = saved.get("last_queue_error", "")
@@ -956,19 +959,19 @@ class Bridge:
         if len(relative) > 1024 or Path(relative).is_absolute():
             raise ValueError("Некорректный путь")
         parts = Path(relative).parts if relative else ()
-        if any(part in (".", "..", "__pycache__", "node_modules", "build")
-               or part.startswith(".") for part in parts):
+        if any(part in (".", "..") for part in parts):
             raise ValueError("Этот путь недоступен")
         path = root
         for part in parts:
             path = path / part
-            if path.is_symlink():
-                raise ValueError("Ссылки на файлы недоступны")
+            if not path.resolve().is_relative_to(root):
+                raise ValueError("Ссылка выходит за пределы проекта")
         if not path.resolve().is_relative_to(root):
             raise ValueError("Путь выходит за пределы проекта")
-        return root, path
+        return root, path.resolve()
 
-    def workspace_list(self, thread_id: str | None, relative: str = "") -> dict:
+    def workspace_list(self, thread_id: str | None, relative: str = "", query: str = "", hidden: bool = False,
+                       service: bool = False, cursor: str | None = None) -> dict:
         if relative.startswith("@chat-files/"):
             thread_id = self._thread_id(thread_id)
             with self.chat_images_lock:
@@ -985,21 +988,7 @@ class Bridge:
         root, directory = self.workspace_path(thread_id, relative)
         if not directory.is_dir():
             raise ValueError("Папка не найдена")
-        entries = []
-        for path in directory.iterdir():
-            if path.name.startswith(".") or path.name in {"__pycache__", "node_modules", "build"} or path.is_symlink():
-                continue
-            try:
-                is_dir = path.is_dir()
-                if not is_dir and not path.is_file():
-                    continue
-                entries.append({"name": path.name, "path": str(path.relative_to(root)),
-                                "isDirectory": is_dir, "size": 0 if is_dir else path.stat().st_size})
-            except OSError:
-                continue
-        entries.sort(key=lambda item: (not item["isDirectory"], item["name"].casefold()))
-        return {"rootName": root.name, "path": relative, "entries": entries[:200],
-                "truncated": len(entries) > 200}
+        return listing(root, directory, relative, query, hidden, service, cursor)
 
     def workspace_resolve(self, thread_id: str | None, reference: str) -> dict:
         if not reference or len(reference) > 2048:
@@ -1119,6 +1108,7 @@ class Bridge:
                 "thread_modes": self.thread_modes,
                 "published_plans": self.published_plans,
                 "control_operations": self.control_operations,
+                "plan_boundaries": self.plan_boundaries,
                 "cancelled_sends": self.cancelled_sends,
                 "last_queue_error": self.last_queue_error,
             }
@@ -1132,6 +1122,59 @@ class Bridge:
                 os.replace(temporary, self.state_file)
             finally:
                 temporary.unlink(missing_ok=True)
+
+    def capabilities(self) -> dict:
+        with self.rpc_session() as rpc:
+            try:
+                modes = rpc.call('collaborationMode/list', {}).get('data', [])
+            except RpcError:
+                modes = []
+        return {'protocolVersion': 1, 'agentVersion': '0.4.3',
+                'desktop': {'transport': 'bundled-app-server', 'modes': [m.get('mode') for m in modes]},
+                'features': {'workspacePaging': True, 'workspaceSearch': True, 'workspaceVisibility': True,
+                    'controls': True, 'queueReconciliation': True, 'planCreate': any(m.get('mode') == 'plan' for m in modes),
+                    'nativeSteer': False},
+                'limitations': {'nativeSteer': 'Desktop не предоставляет подтверждённого атомарного переноса очереди в корректировку'}}
+
+    def reconcile_native_queue(self, tid, rpc, snapshot=None):
+        with self.queue_lock:
+            if not any(m.get("threadId") == tid and m.get("nativeId") for m in self.queued_sends.values()):
+                return
+        snapshot = snapshot or rpc.call('thread/queue/list', {'threadId': tid, 'limit': 100})
+        entries = list(snapshot.get('data', []))
+        cursor = snapshot.get('nextCursor')
+        while cursor and len(entries) < 5000:
+            page = rpc.call('thread/queue/list', {'threadId': tid, 'limit': 100, 'cursor': cursor})
+            entries.extend(page.get('data', []))
+            next_cursor = page.get('nextCursor')
+            if next_cursor == cursor:
+                break
+            cursor = next_cursor
+        native = {m.get('id'): m for m in entries}
+        thread = rpc.call('thread/read', {'threadId': tid, 'includeTurns': True}).get('thread', {})
+        delivered = {i.get('clientId'): t.get('id') for t in thread.get('turns', [])
+                     for i in t.get('items', []) if i.get('type') == 'userMessage' and i.get('clientId')}
+        with self.queue_lock, self.state_lock:
+            changed = False
+            for mid, msg in list(self.queued_sends.items()):
+                if msg.get('threadId') != tid or not msg.get('nativeId'):
+                    continue
+                if mid in delivered:
+                    changed = True
+                    self.sent_messages[mid] = {'threadId': tid, 'turnId': delivered[mid], 'clientMessageId': mid}
+                    self.queued_sends.pop(mid, None)
+                    for fid in msg.get('files', []): self.pending.pop(fid, None)
+                elif msg['nativeId'] in native:
+                    item = native[msg['nativeId']]
+                    text = '\n'.join(i.get('text', '') for i in item.get('input', []) if i.get('type') == 'text')
+                    changed |= msg.get('queueState') != 'queued' or msg.get('text') != text
+                    msg['queueState'] = 'queued'
+                    msg['text'] = text
+                elif not cursor:
+                    changed |= msg.get('queueState') != 'checking'
+                    msg['queueState'] = 'checking'
+            while len(self.sent_messages) > 512: self.sent_messages.pop(next(iter(self.sent_messages)))
+            if changed: self._save_state()
 
     def status(self, thread_id: str | None = None) -> dict:
         thread_id = self._thread_id(thread_id)
@@ -1454,7 +1497,8 @@ class Bridge:
 
     def send(self, text: str, file_ids: list[str], client_message_id: str,
              thread_id: str | None = None, model: str | None = None,
-             effort: str | None = None) -> dict:
+             effort: str | None = None, collaboration_mode: str | None = None,
+             require_idle: bool = False) -> dict:
         thread_id = self._thread_id(thread_id)
         with self.send_lock:
             if time.monotonic() < self.update_until:
@@ -1512,6 +1556,8 @@ class Bridge:
                             self.sent_messages[client_message_id] = response
                             self._save_state()
                         return response
+                    if require_idle:
+                        self.controls.idle(rpc, thread_id)
                     # Existing chats must be resumed before another client writes to them.
                     try:
                         rpc.call("thread/resume", {"threadId": thread_id}, timeout=15)
@@ -1543,7 +1589,7 @@ class Bridge:
                     params["model"] = model
                 if effort:
                     params["effort"] = effort
-                mode = self.thread_modes.get(thread_id)
+                mode = collaboration_mode or self.thread_modes.get(thread_id)
                 if mode:
                     thread_info = rpc.call("thread/read", {"threadId": thread_id, "includeTurns": False}).get("thread", {})
                     effective_model = model or thread_info.get("model")
@@ -1664,6 +1710,11 @@ class Bridge:
                 message = self.queued_sends.get(client_message_id)
             if message and message.get("nativeId"):
                 with self.rpc_session() as rpc:
+                    self.reconcile_native_queue(message["threadId"], rpc)
+                    if client_message_id in self.sent_messages:
+                        return {"status": "sent"}
+                    if message.get("queueState") == "checking":
+                        raise ValueError("Запись исчезла из очереди Desktop. Её исход проверяется; отмена не подтверждена")
                     rpc.call("thread/queue/delete", {"threadId": message["threadId"], "queuedSubmissionId": message["nativeId"]})
             with self.queue_lock:
                 with self.state_lock:
@@ -1783,20 +1834,14 @@ class Bridge:
                 last_cleanup = time.monotonic()
             with self.queue_lock:
                 pending = list(self.queued_sends.items())
+            checked_native = set()
             for message_id, message in pending:
                 try:
                     if message.get("nativeId"):
+                        if message["threadId"] in checked_native: continue
+                        checked_native.add(message["threadId"])
                         with self.rpc_session() as rpc:
-                            thread = rpc.call("thread/read", {"threadId": message["threadId"], "includeTurns": True}).get("thread", {})
-                        delivered = next((t for t in thread.get("turns", []) if any(
-                            i.get("type") == "userMessage" and i.get("clientId") == message_id for i in t.get("items", []))), None)
-                        if delivered:
-                            with self.queue_lock, self.state_lock:
-                                self.queued_sends.pop(message_id, None)
-                                self.sent_messages[message_id] = {"threadId": message["threadId"], "turnId": delivered["id"], "clientMessageId": message_id}
-                                for file_id in message.get("files", []): self.pending.pop(file_id, None)
-                                while len(self.sent_messages) > 512: self.sent_messages.pop(next(iter(self.sent_messages)))
-                                self._save_state()
+                            self.reconcile_native_queue(message['threadId'], rpc)
                         continue
                     self.send(message["text"], message["files"], message_id,
                               message.get("threadId") or self.thread_id,
@@ -2127,7 +2172,8 @@ def main(argv: list[str] | None = None) -> None:
             route = parsed.path
             try:
                 thread_id = parse_qs(parsed.query).get("threadId", [None])[0]
-                if route == "/api/status": self.send_json(200, bridge.status(thread_id))
+                if route == "/api/capabilities": self.send_json(200, bridge.capabilities())
+                elif route == "/api/status": self.send_json(200, bridge.status(thread_id))
                 elif route == "/api/history":
                     query = parse_qs(parsed.query)
                     self.send_json(200, bridge.history(thread_id,
@@ -2158,7 +2204,9 @@ def main(argv: list[str] | None = None) -> None:
                 elif route == "/api/outbox": self.send_json(200, {"files": bridge.outbox()})
                 elif route == "/api/workspace":
                     relative = parse_qs(parsed.query).get("path", [""])[0]
-                    self.send_json(200, bridge.workspace_list(thread_id, relative))
+                    q = parse_qs(parsed.query)
+                    self.send_json(200, bridge.workspace_list(thread_id, relative, q.get("query", [""])[0],
+                        q.get("hidden", ["false"])[0] == "true", q.get("service", ["false"])[0] == "true", q.get("cursor", [None])[0]))
                 elif route == "/api/workspace/resolve":
                     reference = parse_qs(parsed.query).get("path", [""])[0]
                     self.send_json(200, bridge.workspace_resolve(thread_id, reference))

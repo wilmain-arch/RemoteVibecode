@@ -37,6 +37,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -70,9 +71,19 @@ internal fun WorkspaceFilesScreen(
     onAsk: (String) -> Unit, onSaveWorkspace: (WorkspaceEntry) -> Unit,
     onSaveOutbox: (RemoteFile) -> Unit, onFetchOutbox: () -> Unit, onAttach: () -> Unit,
     onProjectFile: (String) -> Unit, saveStatus: String = "",
+    nextCursor: String = "", onListing: ((String, String, Boolean, Boolean, String) -> Unit)? = null,
 ) {
     var transferTab by rememberSaveable { mutableStateOf(false) }
     var search by rememberSaveable(path) { mutableStateOf("") }
+    val displayPrefs = androidx.compose.ui.platform.LocalContext.current.getSharedPreferences("workspace-display", 0)
+    var showHidden by rememberSaveable { mutableStateOf(displayPrefs.getBoolean("hidden", false)) }
+    var showService by rememberSaveable { mutableStateOf(displayPrefs.getBoolean("service", false)) }
+    androidx.compose.runtime.LaunchedEffect(path, search, showHidden, showService, onListing != null) {
+        if (onListing != null && !path.startsWith("@chat-files/")) {
+            kotlinx.coroutines.delay(350)
+            onListing(path, search, showHidden, showService, "")
+        }
+    }
     var imageOpen by rememberSaveable(previewPath) { mutableStateOf(false) }
     val linkedFile = path.startsWith("@chat-files/")
     val selectedFile = entries.firstOrNull { it.path == previewPath }
@@ -300,13 +311,18 @@ internal fun WorkspaceFilesScreen(
                         })
                 }
                 if (loading) CircularProgressIndicator(Modifier.padding(22.dp))
+                if (onListing != null && !linkedFile) Row(Modifier.fillMaxWidth().padding(horizontal=16.dp), verticalAlignment=Alignment.CenterVertically) {
+                    FilterChip(selected=showHidden,onClick={showHidden=!showHidden;displayPrefs.edit().putBoolean("hidden",showHidden).apply()},label={Text("Скрытые")},modifier=Modifier.heightIn(min=48.dp))
+                    Spacer(Modifier.width(8.dp))
+                    FilterChip(selected=showService,onClick={showService=!showService;displayPrefs.edit().putBoolean("service",showService).apply()},label={Text("Служебные")},modifier=Modifier.heightIn(min=48.dp))
+                }
                 if (error.isNotBlank()) {
                     Text(error, Modifier.padding(horizontal = UiSpace.screen),
                         color = MaterialTheme.colorScheme.error)
-                    TextButton(onClick = { onBrowse(path) }) { Text("Повторить") }
+                    TextButton(onClick = { if(onListing != null) onListing(path,search,showHidden,showService,"") else onBrowse(path) }) { Text("Обновить список") }
                 }
                 val query = search.trim().filter { it.isLetterOrDigit() }.lowercase()
-                val filtered = entries.filter { entry ->
+                val filtered = if(onListing != null) entries else entries.filter { entry ->
                     entry.name.contains(search.trim(), ignoreCase = true) ||
                         (query.isNotEmpty() && entry.name.filter { it.isLetterOrDigit() }.lowercase().contains(query))
                 }
@@ -319,13 +335,14 @@ internal fun WorkspaceFilesScreen(
                     }
                     if (folders.isNotEmpty()) item { SectionLabel("Папки", Modifier.padding(start = 21.dp, top = 18.dp, bottom = 9.dp)) }
                     items(folders, key = { it.path }) { entry ->
-                        WorkspaceRow(entry, threadId, loadImage, onClick = { onBrowse(entry.path) })
+                        WorkspaceRow(entry, threadId, loadImage, onClick = { if(entry.available) onBrowse(entry.path) })
                     }
                     if (files.isNotEmpty()) item { SectionLabel("Файлы", Modifier.padding(start = 21.dp, top = 23.dp, bottom = 9.dp)) }
                     items(files, key = { it.path }) { entry ->
-                        WorkspaceRow(entry, threadId, loadImage, onClick = { onPreview(entry.path) })
+                        WorkspaceRow(entry, threadId, loadImage, onClick = { if(entry.available) onPreview(entry.path) })
                     }
-                    if (truncated) item { Text("Показаны первые 200 элементов папки",
+                    if(nextCursor.isNotBlank()) item { TextButton(enabled=!loading,onClick={onListing?.invoke(path,search,showHidden,showService,nextCursor)},modifier=Modifier.heightIn(min=48.dp)) { Text("Показать ещё") } }
+                    else if (truncated) item { Text("Для полного списка обновите агент на ПК",
                         Modifier.padding(20.dp), style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
@@ -374,11 +391,11 @@ private fun WorkspaceRow(entry: WorkspaceEntry, threadId: String,
                          loadImage: suspend (String) -> ByteArray, onClick: () -> Unit) {
     Row(Modifier.fillMaxWidth().heightIn(min = 72.dp)
         .semantics { contentDescription = if (entry.isDirectory) "Папка ${entry.name}" else "Файл ${entry.name}" }
-        .clickable(onClick = onClick).padding(horizontal = UiSpace.screen),
+        .clickable(enabled=entry.available,onClick = onClick).padding(horizontal = UiSpace.screen),
         verticalAlignment = Alignment.CenterVertically) {
         if (entry.isDirectory) Box(Modifier.width(60.dp)) {
             UiGlyph(UiIcon.Folder, size = 21.dp, tint = MaterialTheme.colorScheme.secondary)
-        } else if (isSupportedImage(entry.name)) Box(Modifier.width(60.dp)) {
+        } else if (entry.available && isSupportedImage(entry.name)) Box(Modifier.width(60.dp)) {
             RemoteImage("/api/workspace/image?threadId=${Uri.encode(threadId)}&path=${Uri.encode(entry.path)}",
                 entry.name, loadImage, Modifier.size(48.dp).clip(RoundedCornerShape(8.dp)), thumbnail = true)
         } else Box(Modifier.width(60.dp)) {
@@ -389,7 +406,8 @@ private fun WorkspaceRow(entry: WorkspaceEntry, threadId: String,
             Text(entry.name, maxLines = 2, overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.SemiBold)
-            if (!entry.isDirectory) Text(fileSize(entry.size),
+            if(entry.isLink) Text(if(entry.available) "Ссылка внутри проекта" else entry.blockedReason,style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            if (!entry.isDirectory && entry.available) Text(fileSize(entry.size),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }

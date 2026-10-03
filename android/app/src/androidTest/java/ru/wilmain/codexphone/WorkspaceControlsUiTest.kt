@@ -19,12 +19,12 @@ import java.io.File
 @RunWith(AndroidJUnit4::class)
 class WorkspaceControlsUiTest {
     @get:Rule val compose = createComposeRule()
-    private fun show(dark:Boolean=false, font:Float=1f, turn:String="", request:suspend (String,JSONObject?)->JSONObject={_,_->JSONObject()}, jump:(String)->Unit={}) {
+    private fun show(dark:Boolean=false, font:Float=1f, turn:String="", compatibility:String="", request:suspend (String,JSONObject?)->JSONObject={_,_->JSONObject()}, jump:(String)->Unit={}) {
         compose.setContent {
             val density=LocalDensity.current
             CompositionLocalProvider(LocalDensity provides Density(density.density,font)) {
                 MaterialTheme(colorScheme=if(dark) darkPalette else lightPalette, typography=appTypography) {
-                    androidx.compose.material3.Surface { WorkspaceControls("fixture","Синтетический проект с длинным русским названием",turn,request,{}, {},jump,{}) }
+                    androidx.compose.material3.Surface { WorkspaceControls("fixture","Синтетический проект с длинным русским названием",turn,request,{}, {},jump,{},compatibilityNote=compatibility) }
                 }
             }
         }
@@ -37,6 +37,63 @@ class WorkspaceControlsUiTest {
         File(ctx.filesDir,"$name.png").outputStream().use { stream -> screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG,100,stream) }
         screenshot.recycle()
     }
+    @Test fun oldAgentShowsCompatibilityNoticeWithoutActions() {
+        var requests=0
+        show(compatibility="Обновите агент на ПК", request={_,_->requests++; JSONObject()})
+        compose.onNodeWithText("Обновите агент на ПК").assertIsDisplayed()
+        compose.onNodeWithText("Создать новый план").assertDoesNotExist()
+        assertEquals(0,requests)
+        shot("completion-compatibility-light")
+    }
+
+    @Test fun newPlanShowsCurrentAndKeepsRetryIdentity() {
+        val payloads=mutableListOf<JSONObject>()
+        show(request={_,payload->
+            if(payload!=null) { payloads.add(JSONObject(payload.toString())); error("Тестовый обрыв связи") }
+            JSONObject("""{"modes":[{"mode":"plan"},{"mode":"default"}],"selectedMode":"default","currentPlanTurnId":"new","plans":[{"turnId":"old","text":"Старый план"},{"turnId":"new","text":"Новый план"}]}""")
+        })
+        compose.onNodeWithText("План и цель").performScrollTo().performClick()
+        compose.waitUntil { compose.onAllNodesWithText("Новый план").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("Старый план").assertDoesNotExist()
+        compose.onNodeWithText("Предыдущие планы · 1").assertDoesNotExist()
+        compose.onNodeWithText("Создать новый план").performScrollTo().performClick()
+        compose.onNodeWithText("Создать план").assertIsNotEnabled()
+        compose.onNodeWithText("Что нужно распланировать").performTextInput("Синтетическая задача")
+        compose.onNodeWithText("Создать план").performClick()
+        compose.waitUntil { payloads.size==1 }
+        compose.onNodeWithText("Тестовый обрыв связи").assertIsDisplayed()
+        compose.onNodeWithText("Создать план").performClick()
+        compose.waitUntil { payloads.size==2 }
+        assertEquals(payloads[0].getString("operationId"),payloads[1].getString("operationId"))
+        assertEquals("plan-create",payloads[0].getString("action"))
+        assertTrue(payloads[0].getBoolean("confirmed"))
+    }
+
+    @Test fun cancelKeepsPlanAndAcceptedLaunchClearsIt() {
+        var accepted=false
+        show(dark=true,request={_,payload->
+            if(payload!=null) { accepted=true; JSONObject("""{"threadId":"fixture","turnId":"accepted"}""") }
+            else if(accepted) JSONObject("""{"modes":[{"mode":"plan"}],"currentPlanTurnId":"accepted","currentPlanStatus":"inProgress","plans":[]}""")
+            else JSONObject("""{"modes":[{"mode":"plan"}],"currentPlanTurnId":"old","plans":[{"turnId":"old","text":"Прежний план"}]}""")
+        })
+        compose.onNodeWithText("План и цель").performScrollTo().performClick()
+        compose.waitUntil { compose.onAllNodesWithText("Прежний план").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("Создать новый план").performScrollTo().performClick()
+        compose.onNodeWithText("Что нужно распланировать").performTextInput("Отменяемая задача")
+        compose.onNodeWithText("Отмена").performClick()
+        assertFalse(accepted)
+        compose.onNodeWithText("Прежний план").assertExists()
+        compose.onNodeWithText("Создать новый план").performScrollTo().performClick()
+        compose.onNodeWithText("Что нужно распланировать").performTextInput("Новая синтетическая задача")
+        compose.onNodeWithText("Создать план").performClick()
+        compose.waitUntil { compose.onAllNodesWithText("Codex составляет новый план. Ход работы доступен в чате.").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("Прежний план").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Обновить раздел").performClick()
+        compose.waitUntil { compose.onAllNodesWithText("Codex составляет новый план. Ход работы доступен в чате.").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("Прежний план").assertDoesNotExist()
+        shot("plan-clear-dark")
+    }
+
     @Test fun renameRequiresTextAndSendsOneAction() {
         var body:JSONObject?=null
         show(request={_,payload->if(payload!=null)body=payload;JSONObject()})
