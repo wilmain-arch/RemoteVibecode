@@ -29,6 +29,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Scaffold
@@ -36,6 +38,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
@@ -49,12 +55,15 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun ProjectsScreen(
     projects: List<ProjectGroup>, selectedThreadId: String,
@@ -87,9 +96,10 @@ internal fun ProjectsScreen(
             confirmButton = { TextButton(onClick = { resetAttempt = null; onResetLimits(attempt) }) { Text("Использовать кредит") } },
             dismissButton = { TextButton(onClick = { resetAttempt = null }) { Text("Отмена") } })
     }
-    var search by remember { mutableStateOf("") }
+    var search by rememberSaveable { mutableStateOf("") }
     var searchFocused by remember { mutableStateOf(false) }
-    val compactLimits = searchFocused || search.isNotBlank() || WindowInsets.ime.getBottom(LocalDensity.current) > 0
+    var limitsExpanded by rememberSaveable { mutableStateOf(false) }
+    val compactLimits = !limitsExpanded || searchFocused || search.isNotBlank() || WindowInsets.ime.getBottom(LocalDensity.current) > 0
     val visibleProjects = projects.map { group ->
         group to group.threads.filter { search.isBlank() ||
             group.name.contains(search, ignoreCase = true) || it.title.contains(search, ignoreCase = true) }
@@ -97,7 +107,8 @@ internal fun ProjectsScreen(
         (search.isBlank() || group.name.contains(search, ignoreCase = true))) }
     var deleteCandidate by remember { mutableStateOf<ThreadItem?>(null) }
     var moveCandidate by remember { mutableStateOf<ThreadItem?>(null) }
-    val expanded = remember { mutableStateMapOf<String, Boolean>() }
+    val expanded = rememberExpansionState()
+    var settingsOpen by rememberSaveable { mutableStateOf(false) }
     deleteCandidate?.let { thread ->
         AlertDialog(
             onDismissRequest = { deleteCandidate = null },
@@ -134,27 +145,10 @@ internal fun ProjectsScreen(
     fun threadTime(value: Long): String = if (value <= 0) "" else
         DateUtils.getRelativeTimeSpanString(value, System.currentTimeMillis(), DateUtils.DAY_IN_MILLIS,
             DateUtils.FORMAT_ABBREV_RELATIVE).toString()
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            Row(Modifier.fillMaxWidth().statusBarsPadding().heightIn(min = 70.dp).padding(horizontal = 12.dp),
-                verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = onClose, modifier = Modifier.size(48.dp)
-                    .semantics { contentDescription = "Назад к чату" }) { UiGlyph(UiIcon.Back, size = 22.dp) }
-                Column(Modifier.weight(1f).padding(start = 4.dp)) {
-                    Text("Проекты", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Text("Проектов: ${projects.count { it.id != "other" }} · Чатов: ${projects.sumOf { it.threads.size }}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-                TextButton(onClick = { onNewChat(null) }, modifier = Modifier.size(48.dp)
-                    .semantics { contentDescription = "Новый чат" }) { UiGlyph(UiIcon.Plus, size = 23.dp) }
-            }
-        },
-        bottomBar = {
-            Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background)
-                .imePadding().navigationBarsPadding().padding(horizontal = 18.dp, vertical = 7.dp)) {
+    if (settingsOpen) ModalBottomSheet(onDismissRequest = { settingsOpen = false }) {
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(UiSpace.screen)) {
+            Text("Настройки", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(bottom = 16.dp))
                 Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant,
                     RoundedCornerShape(16.dp)).padding(4.dp),
                     horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -164,6 +158,7 @@ internal fun ProjectsScreen(
                             modifier = Modifier.weight(1f).heightIn(min = 48.dp).semantics {
                                 selected = isSelected
                                 contentDescription = "Тема: $label"
+                                role = Role.RadioButton
                             }.clickable { onThemeMode(mode) },
                             color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
                             shape = RoundedCornerShape(12.dp),
@@ -183,9 +178,29 @@ internal fun ProjectsScreen(
                         .semantics { contentDescription = "Обновить список" }) {
                         UiGlyph(UiIcon.Refresh, size = 20.dp)
                     }
-                    TextButton(onClick = onUpdates) { Text(if (updateAvailable) "Обновить приложение" else "Обновления") }
-                    TextButton(onClick = onDevices) { Text("ADB") }
-                    TextButton(onClick = onDisconnect) { Text("Отключить") }
+                    TextButton(onClick = { settingsOpen = false; onUpdates() }) { Text(if (updateAvailable) "Обновить приложение" else "Обновления") }
+                    TextButton(onClick = { settingsOpen = false; onDevices() }) { Text("ADB") }
+                    TextButton(onClick = { settingsOpen = false; onDisconnect() }) { Text("Отключить") }
+                }
+        }
+    }
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = {
+            UiScreenHeader("Проекты", onClose, backDescription = "Назад к чату",
+                subtitle = "Проектов: ${projects.count { it.id != "other" }} · Чатов: ${projects.sumOf { it.threads.size }}",
+                actions = { IconButton(onClick = { onNewChat(null) }) { UiGlyph(UiIcon.Plus, "Новый чат", 23.dp) } })
+        },
+        bottomBar = {
+            Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background)
+                .imePadding().navigationBarsPadding().padding(horizontal = UiSpace.screen, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { settingsOpen = true }, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
+                    Text("Настройки", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                    UiGlyph(UiIcon.ChevronRight)
+                }
+                IconButton(onClick = onRefreshCatalog, enabled = !catalogLoading) {
+                    UiGlyph(UiIcon.Refresh, "Обновить список")
                 }
             }
         },
@@ -194,7 +209,7 @@ internal fun ProjectsScreen(
             contentPadding = PaddingValues(top = inner.calculateTopPadding(),
                 bottom = inner.calculateBottomPadding() + 20.dp)) {
             item(key = "search") {
-                Surface(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp),
+                Surface(Modifier.fillMaxWidth().padding(horizontal = UiSpace.screen, vertical = 10.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant,
                     shape = RoundedCornerShape(12.dp)) {
                     BasicTextField(search, { search = it }, singleLine = true,
@@ -223,39 +238,43 @@ internal fun ProjectsScreen(
                 }
             }
             if (catalogLoading) item(key = "catalog-loading") {
-                Column(Modifier.padding(horizontal = 22.dp, vertical = 8.dp)) {
+                Column(Modifier.padding(horizontal = UiSpace.screen, vertical = 8.dp)) {
                     LinearProgressIndicator(Modifier.fillMaxWidth())
                     Text("Обновляю проекты и чаты…", Modifier.padding(top = 8.dp),
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             if (catalogError.isNotBlank()) item(key = "catalog-error") {
-                Column(Modifier.padding(horizontal = 22.dp, vertical = 8.dp)) {
+                Column(Modifier.padding(horizontal = UiSpace.screen, vertical = 8.dp)) {
                     Text(catalogError, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                     TextButton(onClick = onRefreshCatalog, enabled = !catalogLoading) { Text("Повторить") }
                 }
             }
             item(key = "limits") {
                 if (actionError.isNotBlank()) Text(actionError,
-                    Modifier.padding(horizontal = 22.dp, vertical = 4.dp),
+                    Modifier.padding(horizontal = UiSpace.screen, vertical = 4.dp),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error)
-                Surface(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 4.dp),
+                Surface(Modifier.fillMaxWidth().padding(horizontal = UiSpace.screen, vertical = 4.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant,
                     shape = RoundedCornerShape(18.dp)) {
-                    Column(Modifier.padding(horizontal = 16.dp, vertical = 13.dp)) {
+                    Column(Modifier.padding(horizontal = 16.dp, vertical = if (compactLimits) 0.dp else 13.dp)) {
                         if (compactLimits) {
-                            Text("Лимиты Codex", style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.SemiBold)
-                            Text(if (usageLimits != null)
-                                "5 часов: ${usageLimits.fiveHours?.remainingPercent?.let { "$it%" } ?: "нет данных"} · " +
-                                    "Неделя: ${usageLimits.week?.remainingPercent?.let { "$it%" } ?: "нет данных"}"
-                                else if (limitsLoading) "Получаю данные аккаунта…" else limitsError.ifBlank { "Данные недоступны" },
-                                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Text(if (usageLimits != null)
+                                    "Осталось · 5ч ${usageLimits.fiveHours?.remainingPercent?.let { "$it%" } ?: "—"} · " +
+                                        "неделя ${usageLimits.week?.remainingPercent?.let { "$it%" } ?: "—"}"
+                                    else "Лимиты · " + if (limitsLoading) "получаю данные…" else limitsError.ifBlank { "данные недоступны" },
+                                    Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                IconButton(onClick = { limitsExpanded = true }, modifier = Modifier.semantics {
+                                    contentDescription = "Показать подробности лимитов"
+                                }) { UiGlyph(UiIcon.ChevronDown, size = 18.dp) }
+                            }
                         } else {
                             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("Лимиты Codex", style = MaterialTheme.typography.titleSmall,
+                                Text("Лимиты · осталось", style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.SemiBold)
                                 TextButton(onClick = onRefreshLimits, enabled = !limitsLoading) {
                                     Text(if (limitsLoading) "Обновляю…" else "Обновить")
@@ -289,7 +308,7 @@ internal fun ProjectsScreen(
                 }
             }
             if (!catalogLoading && catalogError.isBlank() && visibleProjects.isEmpty()) item(key = "empty") {
-                Column(Modifier.padding(horizontal = 22.dp, vertical = 20.dp)) {
+                Column(Modifier.padding(horizontal = UiSpace.screen, vertical = 20.dp)) {
                     Text(if (search.isNotBlank()) "Ничего не найдено" else "Пока нет проектов и чатов",
                         style = MaterialTheme.typography.titleSmall)
                     Text(if (search.isNotBlank()) "Попробуйте другое название проекта или чата."
@@ -302,18 +321,18 @@ internal fun ProjectsScreen(
             visibleProjects.forEach { (group, matches) ->
                 val isStandalone = group.id == "other"
                 val isCurrent = group.threads.any { it.id == selectedThreadId }
-                val isExpanded = isStandalone || search.isNotBlank() || (expanded[group.id] ?: false)
+                val isExpanded = isStandalone || search.isNotBlank() || (expanded[group.id] ?: isCurrent)
                 item(key = "heading:${group.id}") {
                     if (isStandalone) {
-                        Text("Чаты", Modifier.padding(start = 21.dp, top = 23.dp, bottom = 9.dp),
+                        Text("Чаты", Modifier.padding(start = UiSpace.screen, top = 23.dp, bottom = 9.dp),
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     } else {
                         Row(Modifier.fillMaxWidth().clickable { expanded[group.id] = !isExpanded }
-                            .padding(horizontal = 22.dp, vertical = 11.dp),
+                            .padding(horizontal = UiSpace.screen, vertical = 11.dp),
                             verticalAlignment = Alignment.CenterVertically) {
-                            UiGlyph(UiIcon.Folder, size = 18.dp,
+                            UiGlyph(UiIcon.Folder, size = 24.dp,
                                 tint = MaterialTheme.colorScheme.secondary)
                             Spacer(Modifier.width(14.dp))
                             Column(Modifier.weight(1f)) {
@@ -357,16 +376,16 @@ internal fun ProjectsScreen(
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        TextButton(onClick = { moveCandidate = thread },
-                            modifier = Modifier.size(48.dp).semantics {
-                                contentDescription = "Переместить чат: ${thread.title}"
-                            }) { UiGlyph(UiIcon.Folder, size = 18.dp,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant) }
-                        TextButton(onClick = { deleteCandidate = thread },
-                            modifier = Modifier.size(48.dp).semantics {
-                                contentDescription = "Удалить чат: ${thread.title}"
-                            }) { UiGlyph(UiIcon.Trash, size = 18.dp,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        var actionsOpen by rememberSaveable(thread.id) { mutableStateOf(false) }
+                        Box {
+                            IconButton(onClick = { actionsOpen = true }) { UiGlyph(UiIcon.More, "Действия чата: ${thread.title}", 22.dp) }
+                            DropdownMenu(expanded = actionsOpen, onDismissRequest = { actionsOpen = false }) {
+                                DropdownMenuItem(text = { Text("Переместить чат") }, leadingIcon = { UiGlyph(UiIcon.Folder) },
+                                    onClick = { actionsOpen = false; moveCandidate = thread })
+                                DropdownMenuItem(text = { Text("Удалить чат", color = MaterialTheme.colorScheme.error) },
+                                    leadingIcon = { UiGlyph(UiIcon.Trash) }, onClick = { actionsOpen = false; deleteCandidate = thread })
+                            }
+                        }
                     }
                 }
             }

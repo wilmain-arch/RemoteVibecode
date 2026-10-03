@@ -43,6 +43,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
@@ -182,7 +183,7 @@ private suspend fun pairFromCode(uri: Uri): PairResult {
     }
     throw lastError ?: IllegalStateException("ПК недоступен")
 }
-private val lightPalette = lightColorScheme(
+internal val lightPalette = lightColorScheme(
     primary = Color(0xFF202321),
     onPrimary = Color.White,
     primaryContainer = Color(0xFFDFE4DD),
@@ -215,15 +216,15 @@ private val lightPalette = lightColorScheme(
     outline = Color(0xFF6C746D),
     outlineVariant = Color(0xFFE4E7E3),
 )
-private val darkPalette = darkColorScheme(
+internal val darkPalette = darkColorScheme(
     primary = Color(0xFFF2F4F1),
     onPrimary = Color(0xFF141715),
     primaryContainer = Color(0xFF343B35),
     onPrimaryContainer = Color(0xFFF2F4F1),
-    secondary = Color(0xFF8CCDB4),
+    secondary = Color(0xFF90D4BB),
     onSecondary = Color(0xFF141715),
     secondaryContainer = Color(0xFF20382E),
-    onSecondaryContainer = Color(0xFF8CCDB4),
+    onSecondaryContainer = Color(0xFF90D4BB),
     tertiary = Color(0xFFA0A8A2),
     onTertiary = Color(0xFF141715),
     tertiaryContainer = Color(0xFF2A312B),
@@ -235,7 +236,7 @@ private val darkPalette = darkColorScheme(
     onBackground = Color(0xFFF2F4F1),
     surface = Color(0xFF141715),
     onSurface = Color(0xFFF2F4F1),
-    surfaceVariant = Color(0xFF242925),
+    surfaceVariant = Color(0xFF242A25),
     onSurfaceVariant = Color(0xFFA0A8A2),
     surfaceDim = Color(0xFF141715),
     surfaceBright = Color(0xFF343B35),
@@ -248,8 +249,12 @@ private val darkPalette = darkColorScheme(
     outline = Color(0xFF7A857D),
     outlineVariant = Color(0xFF303632),
 )
-private val appTypography = Typography().let { base ->
-    base.copy(labelSmall = base.labelSmall.copy(fontSize = 12.sp, lineHeight = 16.sp),
+internal val appTypography = Typography().let { base ->
+    base.copy(headlineSmall = base.headlineSmall.copy(fontSize = 24.sp, lineHeight = 30.sp),
+        bodyLarge = base.bodyLarge.copy(fontSize = 16.sp, lineHeight = 25.sp),
+        bodyMedium = base.bodyMedium.copy(fontSize = 14.sp, lineHeight = 20.sp),
+        bodySmall = base.bodySmall.copy(fontSize = 13.sp, lineHeight = 18.sp),
+        labelSmall = base.labelSmall.copy(fontSize = 12.sp, lineHeight = 16.sp),
         labelMedium = base.labelMedium.copy(fontSize = 13.sp, lineHeight = 18.sp))
 }
 
@@ -258,7 +263,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        window.isNavigationBarContrastEnforced = false
+        if (android.os.Build.VERSION.SDK_INT >= 29) window.isNavigationBarContrastEnforced = false
         pairingUri = intent?.data
         setContent { CompanionScreen(pairingUri) }
     }
@@ -275,7 +280,7 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
     var themeMode by remember { mutableStateOf(prefs.getString("themeMode", "system") ?: "system") }
     val scope = rememberCoroutineScope()
     val updates = remember { AppUpdates(context.applicationContext, scope) }
-    var updatesOpen by remember { mutableStateOf(false) }
+    var updatesOpen by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(updates) {
         while (true) {
             updates.check(manual = false)
@@ -299,6 +304,7 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
     var usageLimits by remember { mutableStateOf<UsageLimits?>(null) }
     var limitsLoading by remember { mutableStateOf(false) }
     var limitsError by remember { mutableStateOf("") }
+    var connectionState by remember { mutableStateOf(ConnectionState.Connecting) }
     var codexBusy by remember { mutableStateOf(false) }
     var selectedThreadId by remember { mutableStateOf(prefs.getString("selectedThreadId", "") ?: "") }
     var threadModel by remember { mutableStateOf("") }
@@ -309,7 +315,7 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
     val projects = remember { mutableStateListOf<ProjectGroup>() }
     var catalogLoading by remember { mutableStateOf(false) }
     var catalogError by remember { mutableStateOf("") }
-    var input by remember { mutableStateOf(prefs.getString("draft:${selectedThreadId}", "") ?: "") }
+    var input by rememberSaveable { mutableStateOf(prefs.getString("draft:${selectedThreadId}", "") ?: "") }
     var delivering by remember { mutableStateOf(false) }
     var localQueueError by remember { mutableStateOf("") }
     var lines by remember { mutableStateOf<List<ChatLine>>(emptyList()) }
@@ -329,12 +335,12 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
     var outboxLoading by remember { mutableStateOf(false) }
     var outboxError by remember { mutableStateOf("") }
     var workspaceRoot by remember { mutableStateOf("") }
-    var workspacePath by remember { mutableStateOf("") }
+    var workspacePath by rememberSaveable { mutableStateOf("") }
     var workspaceEntries by remember { mutableStateOf<List<WorkspaceEntry>>(emptyList()) }
     var workspaceLoading by remember { mutableStateOf(false) }
     var workspaceError by remember { mutableStateOf("") }
     var workspaceTruncated by remember { mutableStateOf(false) }
-    var previewPath by remember { mutableStateOf("") }
+    var previewPath by rememberSaveable { mutableStateOf("") }
     var previewText by remember { mutableStateOf("") }
     var previewNote by remember { mutableStateOf("") }
     var previewLoading by remember { mutableStateOf(false) }
@@ -591,13 +597,13 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
         }
     }
 
-    suspend fun browseWorkspace(path: String) {
+    suspend fun browseWorkspace(path: String, clearPreview: Boolean = true) {
         val thread = selectedThreadId
         workspacePath = path
         workspaceLoading = true
         workspaceError = ""
         workspaceEntries = emptyList()
-        previewPath = ""
+        if (clearPreview) previewPath = ""
         try {
             val result = withReachableHost { root -> withContext(Dispatchers.IO) {
                 requestJson(client, "$root/api/workspace?threadId=${Uri.encode(thread)}&path=${Uri.encode(path)}", token)
@@ -1014,6 +1020,13 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
     LaunchedEffect(token, host, tailHost) {
         if (token.isNotBlank()) {
             runCatching { loadCatalog() }
+            // Restore transient workspace content after Activity recreation.
+            val restoredPreview = previewPath
+            val restoredFolder = workspacePath
+            runCatching {
+                browseWorkspace(restoredFolder, clearPreview = false)
+                if (restoredPreview.isNotBlank()) previewWorkspace(restoredPreview)
+            }
             while (true) {
                 runCatching { cleanupPendingFiles() }
                 runCatching { deliverPending() }
@@ -1021,7 +1034,8 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
                         localQueueError = it.message ?: "жду связи с ПК"
                         status = "Сообщение на телефоне: $localQueueError"
                     }
-                runCatching { refresh() }.onFailure { error ->
+                runCatching { refresh() }.onSuccess { connectionState = ConnectionState.Online }.onFailure { error ->
+                    connectionState = ConnectionState.Reconnecting
                     if (error.message?.contains("Требуется сопряжение") == true) {
                         clearSavedToken(context, prefs)
                         token = ""
@@ -1079,7 +1093,7 @@ private fun CompanionScreen(externalPairingUri: Uri?) {
             },
             paired = token.isNotBlank(), relayOnly = BuildConfig.RELAY_ONLY,
             title = title, projectName = projectName,
-            status = status, usageLimits = usageLimits, limitsLoading = limitsLoading,
+            status = status, connectionState = connectionState, usageLimits = usageLimits, limitsLoading = limitsLoading,
             limitsError = limitsError, lines = lines, queue = localQueue.toList(),
             selectedThreadId = selectedThreadId, projects = projects.toList(),
             catalogLoading = catalogLoading, catalogError = catalogError,

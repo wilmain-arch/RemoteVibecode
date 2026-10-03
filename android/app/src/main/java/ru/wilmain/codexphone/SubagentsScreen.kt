@@ -12,6 +12,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.foundation.clickable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -43,10 +46,12 @@ private fun agentStatus(status: String) = when (status) {
 
 @Composable
 internal fun SubagentsScreen(threadId: String, onClose: () -> Unit,
-    request: suspend (String, JSONObject?) -> JSONObject, loadImage: suspend (String) -> ByteArray) {
+    request: suspend (String, JSONObject?) -> JSONObject, loadImage: suspend (String) -> ByteArray,
+    onProjectFile: (String) -> Unit, onSaveImage: (ChatImage) -> Unit, saveStatus: String = "") {
+    var openedImage by rememberSaveable(stateSaver = ChatImageSaver) { mutableStateOf<ChatImage?>(null) }
     val scope = rememberCoroutineScope()
     var agents by remember(threadId) { mutableStateOf(emptyList<Subagent>()) }
-    var selectedId by remember(threadId) { mutableStateOf<String?>(null) }
+    var selectedId by rememberSaveable(threadId) { mutableStateOf<String?>(null) }
     var loading by remember(threadId) { mutableStateOf(true) }
     var error by remember(threadId) { mutableStateOf("") }
     var notice by remember(selectedId) { mutableStateOf("") }
@@ -54,7 +59,14 @@ internal fun SubagentsScreen(threadId: String, onClose: () -> Unit,
     var cursor by remember(selectedId) { mutableStateOf<String?>(null) }
     var historyReady by remember(selectedId) { mutableStateOf(false) }
     var historyBusy by remember(selectedId) { mutableStateOf(false) }
-    val drafts = remember(threadId) { mutableStateMapOf<String, SubagentDraft>() }
+    val drafts = rememberSaveable(threadId, saver = listSaver(
+        save = { map: androidx.compose.runtime.snapshots.SnapshotStateMap<String, SubagentDraft> ->
+            map.entries.flatMap { listOf(it.key, it.value.text, it.value.messageId) }
+        },
+        restore = { values -> mutableStateMapOf<String, SubagentDraft>().apply {
+            values.chunked(3).forEach { put(it[0], SubagentDraft(it[1], it[2])) }
+        } }
+    )) { mutableStateMapOf<String, SubagentDraft>() }
     val emptyDraft = remember(threadId, selectedId) { SubagentDraft() }
     val draft = selectedId?.let { drafts[it] } ?: emptyDraft
     val input = draft.text
@@ -127,27 +139,13 @@ internal fun SubagentsScreen(threadId: String, onClose: () -> Unit,
     }
     Scaffold(containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            Row(Modifier.fillMaxWidth().statusBarsPadding().height(70.dp).padding(horizontal = 12.dp),
-                verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = ::back, modifier = Modifier.size(48.dp)) {
-                    UiGlyph(UiIcon.Back, "Назад", 22.dp)
-                }
-                Column(Modifier.weight(1f).padding(start = 4.dp)) {
-                    Text(selected?.name ?: "Субагенты", style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(if (selectedId == null) "${agents.count { it.status == "running" }} работают · ${agents.size} всего"
-                        else selected?.let { agentStatus(it.status) + if (it.model.isBlank()) "" else " · ${it.model}" } ?: "Загрузка",
-                        style = MaterialTheme.typography.labelSmall,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                TextButton(onClick = { refresh++ }, modifier = Modifier.size(48.dp)) {
-                    UiGlyph(UiIcon.Refresh, "Обновить", 21.dp)
-                }
-            }
+            UiScreenHeader(selected?.name ?: "Субагенты", ::back,
+                subtitle = if (selectedId == null) "${agents.count { it.status == "running" }} работают · ${agents.size} всего"
+                    else selected?.let { agentStatus(it.status) + if (it.model.isBlank()) "" else " · ${it.model}" } ?: "Загрузка",
+                actions = { IconButton(onClick = { refresh++ }) { UiGlyph(UiIcon.Refresh, "Обновить", 22.dp) } })
         }, bottomBar = {
             if (selectedId != null) Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background)
-                .imePadding().navigationBarsPadding().padding(14.dp)) {
+                .imePadding().navigationBarsPadding().padding(UiSpace.screen)) {
                 if (notice.isNotBlank()) Text(notice, style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.padding(bottom = 8.dp))
                 if (selected?.canSend == true) {
@@ -168,7 +166,7 @@ internal fun SubagentsScreen(threadId: String, onClose: () -> Unit,
                             unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent))
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                         if (selected.status == "running") TextButton(onClick = { confirmStop = true },
-                            enabled = !actionBusy) { Text("Остановить", color = MaterialTheme.colorScheme.error) }
+                            enabled = !actionBusy) { Text("Остановить", color = if (actionBusy) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f) else MaterialTheme.colorScheme.error) }
                         TextButton(onClick = { act("send") }, enabled = input.isNotBlank() && !actionBusy) {
                             Text(if (selected.status == "running") "Корректировать" else "Отправить")
                         }
@@ -176,13 +174,13 @@ internal fun SubagentsScreen(threadId: String, onClose: () -> Unit,
                 } else {
                     Text("Desktop не разрешает прямой ввод этому агенту.", style = MaterialTheme.typography.bodySmall)
                     if (selected?.status == "running") TextButton(onClick = { confirmStop = true },
-                        enabled = !actionBusy) { Text("Остановить", color = MaterialTheme.colorScheme.error) }
+                        enabled = !actionBusy) { Text("Остановить", color = if (actionBusy) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f) else MaterialTheme.colorScheme.error) }
                 }
                 if (actionBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
             }
         }) { padding ->
         LazyColumn(Modifier.fillMaxSize().padding(padding), state = listState,
-            contentPadding = PaddingValues(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            contentPadding = PaddingValues(UiSpace.screen), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             item {
                 if (error.isNotBlank()) Surface(color = MaterialTheme.colorScheme.errorContainer,
                     shape = RoundedCornerShape(18.dp)) {
@@ -200,19 +198,18 @@ internal fun SubagentsScreen(threadId: String, onClose: () -> Unit,
                 }
                 items(agents, key = { it.id }) { agent ->
                     Surface(onClick = { selectedId = agent.id }, shape = RoundedCornerShape(20.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant) {
-                        Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                        color = MaterialTheme.colorScheme.background) {
+                        Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 12.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 UiGlyph(UiIcon.Agents, size = 21.dp)
-                                Row(Modifier.weight(1f).padding(horizontal = 10.dp),
-                                    verticalAlignment = Alignment.CenterVertically) {
-                                    Text(agent.name, Modifier.weight(1f, fill = false),
-                                        fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
+                                    Text(agent.name,
+                                        fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
                                     if (agent.model.isNotBlank()) Text(agent.model,
-                                        Modifier.padding(start = 8.dp),
+                                        Modifier.padding(top = 3.dp),
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        maxLines = 2, overflow = TextOverflow.Ellipsis)
                                 }
                                 UiGlyph(UiIcon.ChevronRight, "Открыть чат агента", 20.dp)
                             }
@@ -262,7 +259,7 @@ internal fun SubagentsScreen(threadId: String, onClose: () -> Unit,
                             Text(when(role) { "user" -> "Задача / уточнение"; "process" -> "Ход работы"
                                 "system" -> "Событие"; "outcome" -> "Итог работы"; else -> selected?.name ?: "Агент" },
                                 style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            SelectionContainer { MarkdownContent(row.optString("text"), compact = role == "system" || role == "process") }
+                            SelectionContainer { MarkdownContent(row.optString("text"), compact = role == "system" || role == "process", onProjectFile = onProjectFile) }
                             val activities = row.optJSONArray("activities")
                             for (index in 0 until (activities?.length() ?: 0)) {
                                 Text(activities?.optJSONObject(index)?.optString("label").orEmpty(),
@@ -272,7 +269,10 @@ internal fun SubagentsScreen(threadId: String, onClose: () -> Unit,
                             for (index in 0 until (images?.length() ?: 0)) {
                                 images?.optJSONObject(index)?.let { image -> RemoteImage(
                                     "/api/chat/image?id=${Uri.encode(image.optString("id"))}", image.optString("name"),
-                                    loadImage, Modifier.fillMaxWidth().height(260.dp)) }
+                                    loadImage, Modifier.fillMaxWidth().heightIn(min = 120.dp, max = 300.dp)
+                                        .clickable(onClickLabel = "Открыть изображение") {
+                                            openedImage = ChatImage(image.optString("id"), image.optString("name"))
+                                        }, adaptivePreview = true) }
                             }
                         }
                     }
@@ -280,6 +280,8 @@ internal fun SubagentsScreen(threadId: String, onClose: () -> Unit,
             }
         }
     }
+    openedImage?.let { image -> ImageViewer("/api/chat/image?id=${Uri.encode(image.id)}",
+        image.name, loadImage, onClose = { openedImage = null }, onSave = { onSaveImage(image) }, saveStatus = saveStatus) }
     if (confirmStop) AlertDialog(onDismissRequest = { confirmStop = false },
         title = { Text("Остановить ${selected?.name ?: "агента"}?") },
         text = { Text("Текущая задача этого субагента будет прервана. Основной агент продолжит работу.") },

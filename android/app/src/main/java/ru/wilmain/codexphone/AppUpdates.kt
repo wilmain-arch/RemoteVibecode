@@ -259,11 +259,11 @@ internal fun UpdatesScreen(updates: AppUpdates, onClose: () -> Unit) {
     BackHandler(onBack = onClose)
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
-        topBar = { UiScreenHeader(title = "Обновления", onBack = onClose) },
+        topBar = { UiScreenHeader(title = "Обновления", onBack = onClose,
+            subtitle = "RemoteVibecode ${BuildConfig.VERSION_NAME}") },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState())
-            .padding(22.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            Text("RemoteVibecode ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.titleMedium)
+            .padding(UiSpace.screen), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Text(updates.message.ifBlank { "Обновления загружаются из официальных релизов GitHub." })
             if (updates.checkedAt > 0) Text("Проверено: " + android.text.format.DateFormat.format("dd.MM.yyyy HH:mm", updates.checkedAt),
                 style = MaterialTheme.typography.bodySmall)
@@ -271,7 +271,7 @@ internal fun UpdatesScreen(updates: AppUpdates, onClose: () -> Unit) {
                 Text(if (updates.checking) "Проверяю…" else "Проверить обновления")
             }
             updates.update?.let { info ->
-                Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp)) {
+                Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = UiSpace.panel) {
                     Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Text("Версия ${info.version}", style = MaterialTheme.typography.titleMedium)
                         Text("Размер: ${info.size / 1024 / 1024} МБ · Привязка и настройки сохранятся")

@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.size
 
 internal enum class UiIcon(@DrawableRes val drawable: Int) {
     Menu(R.drawable.ui_menu),
+    More(R.drawable.ui_more),
     Files(R.drawable.ui_files),
     Plus(R.drawable.ui_plus),
     ArrowUp(R.drawable.ui_arrow_up),

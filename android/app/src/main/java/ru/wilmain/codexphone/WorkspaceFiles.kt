@@ -12,6 +12,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.material3.IconButton
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -38,6 +43,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.semantics.contentDescription
@@ -63,9 +69,11 @@ internal fun WorkspaceFilesScreen(
     onClose: () -> Unit, onBrowse: (String) -> Unit, onPreview: (String) -> Unit,
     onAsk: (String) -> Unit, onSaveWorkspace: (WorkspaceEntry) -> Unit,
     onSaveOutbox: (RemoteFile) -> Unit, onFetchOutbox: () -> Unit, onAttach: () -> Unit,
+    onProjectFile: (String) -> Unit, saveStatus: String = "",
 ) {
-    var transferTab by remember { mutableStateOf(false) }
-    var search by remember(path) { mutableStateOf("") }
+    var transferTab by rememberSaveable { mutableStateOf(false) }
+    var search by rememberSaveable(path) { mutableStateOf("") }
+    var imageOpen by rememberSaveable(previewPath) { mutableStateOf(false) }
     val linkedFile = path.startsWith("@chat-files/")
     val selectedFile = entries.firstOrNull { it.path == previewPath }
     fun back() {
@@ -97,38 +105,21 @@ internal fun WorkspaceFilesScreen(
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            Row(Modifier.fillMaxWidth().statusBarsPadding().height(70.dp).padding(horizontal = 12.dp),
-                verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = ::back, modifier = Modifier.size(48.dp)
-                    .semantics { contentDescription = "Назад" }) {
-                    UiGlyph(UiIcon.Back, size = 22.dp)
+            UiScreenHeader(title, ::back, subtitle = subtitle, actions = {
+                if (previewPath.isBlank()) IconButton(onClick = {
+                    if (transferTab) onFetchOutbox() else onBrowse(path)
+                }, modifier = Modifier.semantics { contentDescription = "Обновить" }) {
+                    UiGlyph(UiIcon.Refresh, size = 22.dp)
                 }
-                Column(Modifier.weight(1f).padding(start = 4.dp)) {
-                    Text(title, style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold, maxLines = 1,
-                        overflow = TextOverflow.Ellipsis)
-                    Text(subtitle, style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-                if (previewPath.isBlank() && !transferTab) {
-                    TextButton(onClick = { onBrowse(path) }, modifier = Modifier.size(48.dp)
-                        .semantics { contentDescription = "Обновить папку" }) {
-                        UiGlyph(UiIcon.Refresh, size = 21.dp)
-                    }
-                } else if (previewPath.isBlank()) {
-                    Box(Modifier.padding(horizontal = 18.dp).size(7.dp)
-                        .background(MaterialTheme.colorScheme.secondary, CircleShape))
-                }
-            }
+            })
         },
         bottomBar = {
             if (previewPath.isNotBlank()) {
                 Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background)
-                    .navigationBarsPadding().padding(start = 17.dp, end = 17.dp, top = 8.dp, bottom = 9.dp)) {
+                    .imePadding().navigationBarsPadding().padding(start = 17.dp, end = 17.dp, top = 8.dp, bottom = 9.dp)) {
                     if (fileStatus.isNotBlank()) FileStatus(fileStatus)
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                        Button(onClick = { onAsk(previewPath) }, modifier = Modifier.weight(1f).height(48.dp),
+                        Button(onClick = { onAsk(previewPath) }, modifier = Modifier.weight(1f).heightIn(min = 48.dp),
                             shape = RoundedCornerShape(11.dp),
                             contentPadding = PaddingValues(horizontal = 5.dp)) {
                             Text("Спросить Codex", maxLines = 1,
@@ -137,13 +128,13 @@ internal fun WorkspaceFilesScreen(
                         Button(onClick = { selectedFile?.let(onSaveWorkspace) },
                             enabled = selectedFile != null && selectedFile.size <= 40L * 1024 * 1024 &&
                                 transferringFileId.isBlank(),
-                            modifier = Modifier.weight(1f).height(48.dp),
+                            modifier = Modifier.weight(1f).heightIn(min = 48.dp),
                             shape = RoundedCornerShape(11.dp),
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = MaterialTheme.colorScheme.surfaceVariant,
                                 contentColor = MaterialTheme.colorScheme.onSurface),
                             contentPadding = PaddingValues(horizontal = 5.dp)) {
-                            Text("Сохранить на телефон", maxLines = 1,
+                            Text("Сохранить на телефон", maxLines = 2,
                                 style = MaterialTheme.typography.labelSmall)
                         }
                     }
@@ -153,7 +144,7 @@ internal fun WorkspaceFilesScreen(
                         TextButton(onClick = onCancelTransfer) { Text("Отменить передачу") }
                 }
             } else {
-                Row(Modifier.fillMaxWidth().navigationBarsPadding()
+                Row(Modifier.fillMaxWidth().imePadding().navigationBarsPadding()
                     .padding(start = 14.dp, end = 14.dp, top = 5.dp, bottom = 10.dp)
                     .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(18.dp))
                     .padding(5.dp), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
@@ -167,12 +158,13 @@ internal fun WorkspaceFilesScreen(
         },
     ) { inner ->
         if (previewPath.isNotBlank()) {
-            LazyColumn(Modifier.fillMaxSize().padding(inner),
+            LazyColumn(Modifier.fillMaxSize().padding(inner).consumeWindowInsets(inner),
                 contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 24.dp)) {
                 item {
                     if (selectedFile?.let { isSupportedImage(it.name) } == true)
                         RemoteImage("/api/workspace/image?threadId=${Uri.encode(threadId)}&path=${Uri.encode(previewPath)}",
-                            selectedFile.name, loadImage, Modifier.fillMaxWidth().height(460.dp))
+                            selectedFile.name, loadImage, Modifier.fillMaxWidth().heightIn(min = 180.dp, max = 360.dp)
+                                .clickable(onClickLabel = "Открыть изображение") { imageOpen = true }, adaptivePreview = true)
                     else if (previewLoading) CircularProgressIndicator(Modifier.padding(20.dp))
                     else if (previewNote.isNotBlank() && previewText.isBlank())
                         Text(previewNote, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -183,7 +175,12 @@ internal fun WorkspaceFilesScreen(
                             style = MaterialTheme.typography.bodySmall)
                         SelectionContainer {
                             if (selectedFile?.name?.endsWith(".md", ignoreCase = true) == true)
-                                MarkdownContent(previewText.take(20000), compact = true)
+                                MarkdownContent(previewText.take(20000), compact = true, onProjectFile = { reference ->
+                                    val resolved = if (reference.startsWith("/") || reference.startsWith("@chat-files/") || reference.contains("://")) reference
+                                        else java.nio.file.Paths.get(previewPath.substringBeforeLast('/', ""))
+                                            .resolve(reference).normalize().toString()
+                                    onProjectFile(resolved)
+                                })
                             else Text(previewText.take(20000),
                                 fontFamily = FontFamily.Monospace,
                                 style = MaterialTheme.typography.bodySmall)
@@ -196,7 +193,7 @@ internal fun WorkspaceFilesScreen(
                 }
             }
         } else if (transferTab) {
-            LazyColumn(Modifier.fillMaxSize().padding(inner),
+            LazyColumn(Modifier.fillMaxSize().padding(inner).consumeWindowInsets(inner),
                 contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 14.dp, bottom = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(18.dp)) {
                 item {
@@ -212,7 +209,7 @@ internal fun WorkspaceFilesScreen(
                                 Modifier.padding(top = 5.dp, bottom = 12.dp),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Button(onClick = onAttach, modifier = Modifier.fillMaxWidth().height(48.dp),
+                            Button(onClick = onAttach, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                                 shape = RoundedCornerShape(11.dp)) { Text("Выбрать файл на телефоне") }
                             if (pendingFiles.isNotEmpty()) Text("Готово к отправке: ${pendingFiles.joinToString { it.name }}",
                                 Modifier.padding(top = 10.dp), style = MaterialTheme.typography.bodySmall)
@@ -240,7 +237,7 @@ internal fun WorkspaceFilesScreen(
                         shape = RoundedCornerShape(17.dp)) {
                         Column(Modifier.padding(horizontal = 14.dp, vertical = 6.dp)) {
                             outboxFiles.forEach { file ->
-                                Row(Modifier.fillMaxWidth().height(64.dp),
+                                Row(Modifier.fillMaxWidth().heightIn(min = 64.dp),
                                     verticalAlignment = Alignment.CenterVertically) {
                                     if (isSupportedImage(file.name))
                                         RemoteImage("/api/outbox/image?id=${Uri.encode(file.id)}",
@@ -263,7 +260,7 @@ internal fun WorkspaceFilesScreen(
                                             containerColor = MaterialTheme.colorScheme.background,
                                             contentColor = MaterialTheme.colorScheme.onSurface),
                                         contentPadding = PaddingValues(horizontal = 10.dp),
-                                        modifier = Modifier.height(42.dp)) { Text("Сохранить") }
+                                        modifier = Modifier.heightIn(min = 48.dp)) { Text("Сохранить") }
                                 }
                                 if (transferringFileId == file.id && transferProgress != null)
                                     FileTransferProgress(transferProgress)
@@ -276,8 +273,8 @@ internal fun WorkspaceFilesScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
         } else {
-            Column(Modifier.fillMaxSize().padding(inner)) {
-                Surface(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp),
+            Column(Modifier.fillMaxSize().padding(inner).consumeWindowInsets(inner)) {
+                Surface(Modifier.fillMaxWidth().padding(horizontal = UiSpace.screen, vertical = 10.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant,
                     shape = RoundedCornerShape(12.dp)) {
                     BasicTextField(search, { search = it }, singleLine = true,
@@ -289,18 +286,22 @@ internal fun WorkspaceFilesScreen(
                                 UiGlyph(UiIcon.Search, size = 18.dp,
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant)
                                 Spacer(Modifier.width(8.dp))
-                                Box {
+                                Box(Modifier.weight(1f)) {
                                     if (search.isEmpty()) Text("Найти в этой папке",
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         style = MaterialTheme.typography.bodyMedium)
                                     innerField()
+                                }
+                                if (search.isNotBlank()) IconButton(onClick = { search = "" },
+                                    modifier = Modifier.semantics { contentDescription = "Очистить поиск" }) {
+                                    UiGlyph(UiIcon.Close, size = 18.dp)
                                 }
                             }
                         })
                 }
                 if (loading) CircularProgressIndicator(Modifier.padding(22.dp))
                 if (error.isNotBlank()) {
-                    Text(error, Modifier.padding(horizontal = 20.dp),
+                    Text(error, Modifier.padding(horizontal = UiSpace.screen),
                         color = MaterialTheme.colorScheme.error)
                     TextButton(onClick = { onBrowse(path) }) { Text("Повторить") }
                 }
@@ -316,11 +317,11 @@ internal fun WorkspaceFilesScreen(
                         Text(if (search.isBlank()) "Папка пуста" else "Ничего не найдено в этой папке",
                             Modifier.padding(20.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    if (folders.isNotEmpty()) item { SectionLabel("ПАПКИ", Modifier.padding(start = 21.dp, top = 18.dp, bottom = 9.dp)) }
+                    if (folders.isNotEmpty()) item { SectionLabel("Папки", Modifier.padding(start = 21.dp, top = 18.dp, bottom = 9.dp)) }
                     items(folders, key = { it.path }) { entry ->
                         WorkspaceRow(entry, threadId, loadImage, onClick = { onBrowse(entry.path) })
                     }
-                    if (files.isNotEmpty()) item { SectionLabel("ФАЙЛЫ", Modifier.padding(start = 21.dp, top = 23.dp, bottom = 9.dp)) }
+                    if (files.isNotEmpty()) item { SectionLabel("Файлы", Modifier.padding(start = 21.dp, top = 23.dp, bottom = 9.dp)) }
                     items(files, key = { it.path }) { entry ->
                         WorkspaceRow(entry, threadId, loadImage, onClick = { onPreview(entry.path) })
                     }
@@ -331,25 +332,30 @@ internal fun WorkspaceFilesScreen(
             }
         }
     }
+    if (imageOpen && selectedFile != null) ImageViewer(
+        "/api/workspace/image?threadId=${Uri.encode(threadId)}&path=${Uri.encode(previewPath)}",
+        selectedFile.name, loadImage, onClose = { imageOpen = false },
+        onSave = { onSaveWorkspace(selectedFile) }, saveStatus = saveStatus)
+
 }
 
 @Composable
 private fun FileDockItem(label: String, active: Boolean, project: Boolean, modifier: Modifier, onClick: () -> Unit) {
-    Surface(modifier.height(46.dp).semantics { selected = active; contentDescription = label }
+    Surface(modifier.heightIn(min = 48.dp).semantics { selected = active; contentDescription = label }
         .clickable(onClick = onClick),
-        color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+        color = if (active) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant,
         shape = RoundedCornerShape(13.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
         ) {
             Spacer(Modifier.weight(1f))
             UiGlyph(if (project) UiIcon.Folder else UiIcon.Upload, size = 19.dp,
-                tint = if (active) MaterialTheme.colorScheme.onPrimary
+                tint = if (active) MaterialTheme.colorScheme.onSecondaryContainer
                     else MaterialTheme.colorScheme.onSurfaceVariant)
             Text(label, style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.SemiBold,
-                color = if (active) MaterialTheme.colorScheme.onPrimary
+                color = if (active) MaterialTheme.colorScheme.onSecondaryContainer
                     else MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.weight(1f))
         }
@@ -366,21 +372,21 @@ private fun SectionLabel(label: String, modifier: Modifier = Modifier) {
 @Composable
 private fun WorkspaceRow(entry: WorkspaceEntry, threadId: String,
                          loadImage: suspend (String) -> ByteArray, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().height(60.dp)
+    Row(Modifier.fillMaxWidth().heightIn(min = 72.dp)
         .semantics { contentDescription = if (entry.isDirectory) "Папка ${entry.name}" else "Файл ${entry.name}" }
-        .clickable(onClick = onClick).padding(horizontal = 21.dp),
+        .clickable(onClick = onClick).padding(horizontal = UiSpace.screen),
         verticalAlignment = Alignment.CenterVertically) {
-        if (entry.isDirectory) Box(Modifier.width(36.dp)) {
+        if (entry.isDirectory) Box(Modifier.width(60.dp)) {
             UiGlyph(UiIcon.Folder, size = 21.dp, tint = MaterialTheme.colorScheme.secondary)
-        } else if (isSupportedImage(entry.name))
+        } else if (isSupportedImage(entry.name)) Box(Modifier.width(60.dp)) {
             RemoteImage("/api/workspace/image?threadId=${Uri.encode(threadId)}&path=${Uri.encode(entry.path)}",
-                entry.name, loadImage, Modifier.size(36.dp), thumbnail = true)
-        else Box(Modifier.width(36.dp)) {
+                entry.name, loadImage, Modifier.size(48.dp).clip(RoundedCornerShape(8.dp)), thumbnail = true)
+        } else Box(Modifier.width(60.dp)) {
             UiGlyph(UiIcon.File, size = 21.dp,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Column(Modifier.weight(1f)) {
-            Text(entry.name, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            Text(entry.name, maxLines = 2, overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.SemiBold)
             if (!entry.isDirectory) Text(fileSize(entry.size),

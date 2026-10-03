@@ -10,7 +10,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.ClickableText
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -61,11 +64,15 @@ private fun InlineMarkdown(value: String, modifier: Modifier = Modifier,
                 builder.append(match.groups[3]!!.value)
                 val url = match.groups[4]!!.value
                 if (url.startsWith("https://") || url.startsWith("http://") || url.startsWith("mailto:")) {
-                    builder.addStringAnnotation("url", url, start, builder.length)
+                    builder.addLink(LinkAnnotation.Url(url), start, builder.length)
                     builder.addStyle(SpanStyle(color = MaterialTheme.colorScheme.primary,
                         textDecoration = TextDecoration.Underline), start, builder.length)
                 } else {
-                    builder.addStringAnnotation("path", url, start, builder.length)
+                    builder.addLink(LinkAnnotation.Clickable(url,
+                        TextLinkStyles(style = SpanStyle(textDecoration = TextDecoration.Underline))) {
+                        if (onProjectFile != null) onProjectFile(url)
+                        else clipboard.setText(AnnotatedString(url))
+                    }, start, builder.length)
                     builder.addStyle(SpanStyle(fontWeight = FontWeight.Medium,
                         textDecoration = TextDecoration.Underline), start, builder.length)
                 }
@@ -79,19 +86,10 @@ private fun InlineMarkdown(value: String, modifier: Modifier = Modifier,
         from = match.range.last + 1
     }
     builder.append(value.substring(from))
-    ClickableText(builder.toAnnotatedString(), modifier = modifier,
-        style = (if (compact) MaterialTheme.typography.bodySmall else MaterialTheme.typography.bodyLarge).copy(color = color,
-            fontWeight = if (bold) FontWeight.SemiBold else FontWeight.Normal,
-            lineHeight = if (compact) 19.sp else 25.sp),
-        onClick = { offset ->
-            builder.toAnnotatedString().getStringAnnotations("url", offset, offset).firstOrNull()?.let {
-                uriHandler.openUri(it.item)
-            }
-            builder.toAnnotatedString().getStringAnnotations("path", offset, offset).firstOrNull()?.let {
-                if (onProjectFile != null) onProjectFile(it.item)
-                else clipboard.setText(AnnotatedString(it.item))
-            }
-        })
+    Text(builder.toAnnotatedString(), modifier = modifier,
+        style = (if (compact) MaterialTheme.typography.bodySmall else MaterialTheme.typography.bodyLarge).copy(
+            color = color, fontWeight = if (bold) FontWeight.SemiBold else FontWeight.Normal,
+            lineHeight = if (compact) 19.sp else 25.sp))
 }
 
 private fun tableCells(line: String): List<String> = line.trim().trim('|').split('|').map { it.trim() }
@@ -120,9 +118,12 @@ internal fun MarkdownContent(markdown: String, modifier: Modifier = Modifier, co
                         color = MaterialTheme.colorScheme.surfaceVariant,
                         modifier = Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(12.dp)) {
-                            if (language.isNotBlank()) Text(language,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                style = MaterialTheme.typography.labelSmall)
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Text(language.ifBlank { "Код" }, Modifier.weight(1f),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    style = MaterialTheme.typography.labelSmall)
+                                CopyAction(code.toString(), "Копировать код")
+                            }
                             Text(code.toString(), Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
                                 .padding(top = if (language.isBlank()) 0.dp else 8.dp),
                                 fontFamily = FontFamily.Monospace, fontSize = 13.sp,
@@ -137,7 +138,8 @@ internal fun MarkdownContent(markdown: String, modifier: Modifier = Modifier, co
                         rows.add(tableCells(lines[index])); index++
                     }
                     val columnCount = rows.maxOfOrNull { it.size } ?: 0
-                    if (compact && columnCount > 2) Text("Сдвиньте таблицу →",
+                    val tableScroll = rememberScrollState()
+                    if (tableScroll.maxValue in 1 until Int.MAX_VALUE) Text("Таблица прокручивается по горизонтали →",
                         Modifier.fillMaxWidth(),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -146,7 +148,7 @@ internal fun MarkdownContent(markdown: String, modifier: Modifier = Modifier, co
                         color = MaterialTheme.colorScheme.surfaceVariant,
                         contentColor = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.fillMaxWidth()) {
-                        Column(Modifier.horizontalScroll(rememberScrollState()).padding(8.dp)) {
+                        Column(Modifier.horizontalScroll(tableScroll).padding(8.dp)) {
                             rows.forEachIndexed { rowIndex, cells ->
                                 Row {
                                     repeat(columnCount) { column ->
@@ -162,7 +164,7 @@ internal fun MarkdownContent(markdown: String, modifier: Modifier = Modifier, co
                 }
                 line.startsWith("# ") || line.startsWith("## ") || line.startsWith("### ") -> {
                     val level = line.takeWhile { it == '#' }.length
-                    Text(line.drop(level).trim(),
+                    Text(line.drop(level).trim(), modifier = Modifier.semantics { heading() },
                         style = when (level) {
                             1 -> if (compact) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge
                             2 -> if (compact) MaterialTheme.typography.titleSmall else MaterialTheme.typography.titleMedium

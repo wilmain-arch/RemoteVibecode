@@ -1,5 +1,7 @@
 package ru.wilmain.codexphone
 
+import androidx.compose.runtime.saveable.rememberSaveable
+
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -59,14 +61,14 @@ internal fun AdbDevicesScreen(
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf("") }
     var message by remember { mutableStateOf("") }
-    var adding by remember { mutableStateOf(false) }
-    var selected by remember { mutableStateOf("") }
-    var name by remember { mutableStateOf("") }
-    var address by remember { mutableStateOf("") }
-    var transport by remember { mutableStateOf("ssh_relay") }
-    var connectPort by remember { mutableStateOf("") }
-    var pairingPort by remember { mutableStateOf("") }
-    var pairingCode by remember { mutableStateOf("") }
+    var adding by rememberSaveable { mutableStateOf(false) }
+    var selected by rememberSaveable { mutableStateOf("") }
+    var name by rememberSaveable { mutableStateOf("") }
+    var address by rememberSaveable { mutableStateOf("") }
+    var transport by rememberSaveable { mutableStateOf("ssh_relay") }
+    var connectPort by rememberSaveable { mutableStateOf("") }
+    var pairingPort by rememberSaveable { mutableStateOf("") }
+    var pairingCode by rememberSaveable { mutableStateOf("") }
 
     suspend fun refresh() {
         val response = onRequest("devices", null)
@@ -119,7 +121,7 @@ internal fun AdbDevicesScreen(
         )
     }) { inner ->
         Column(Modifier.fillMaxSize().padding(inner).imePadding().verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            .padding(horizontal = UiSpace.screen, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.bodyMedium)
             if (message.isNotBlank()) Text(message, color = MaterialTheme.colorScheme.secondary,
@@ -279,9 +281,9 @@ internal fun AdbDevicesScreen(
 
 @Composable
 private fun Section(title: String, content: @Composable () -> Unit) {
-    Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(20.dp),
+    Surface(color = MaterialTheme.colorScheme.background, shape = UiSpace.panel,
         modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(Modifier.padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             content()
         }

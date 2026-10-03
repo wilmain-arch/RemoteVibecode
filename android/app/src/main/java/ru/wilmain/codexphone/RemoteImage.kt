@@ -7,6 +7,9 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -14,6 +17,9 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -45,6 +51,7 @@ internal fun RemoteImage(
     loadImage: suspend (String) -> ByteArray,
     modifier: Modifier = Modifier,
     thumbnail: Boolean = false,
+    adaptivePreview: Boolean = false,
 ) {
     val key = endpoint + if (thumbnail) "&size=thumb" else ""
     var bitmap by remember(key) { mutableStateOf(imageCache.get(key)) }
@@ -55,6 +62,7 @@ internal fun RemoteImage(
             failure = null
             runCatching {
                 val bytes = loadImage(key)
+                withContext(Dispatchers.Default) {
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
                 require(bounds.outWidth > 0 && bounds.outHeight > 0) { "Неподдерживаемое изображение" }
@@ -64,16 +72,24 @@ internal fun RemoteImage(
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size,
                     BitmapFactory.Options().apply { inSampleSize = sample })
                     ?: error("Не удалось открыть изображение")
+                }
             }.onSuccess {
                 imageCache.put(key, it)
                 bitmap = it
-            }.onFailure { failure = it.message?.takeIf(String::isNotBlank) ?: "Ошибка загрузки изображения" }
+            }.onFailure { if (it is CancellationException) throw it; failure = it.message?.takeIf(String::isNotBlank) ?: "Ошибка загрузки изображения" }
         }
     }
-    Box(modifier, contentAlignment = Alignment.Center) {
+    BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
+        val imageModifier = if (adaptivePreview && bitmap != null && maxWidth.value.isFinite() && maxHeight.value.isFinite()) {
+            val ratio = bitmap!!.width.toFloat() / bitmap!!.height
+            Modifier.fillMaxWidth().height((maxWidth / ratio).coerceIn(minHeight, maxHeight))
+        } else Modifier.fillMaxSize()
+        Box(if (adaptivePreview && bitmap != null) imageModifier else Modifier,
+            contentAlignment = Alignment.Center) {
+
         when {
             bitmap != null -> Image(bitmap!!.asImageBitmap(), contentDescription = description,
-                modifier = Modifier.fillMaxSize(),
+                modifier = if (adaptivePreview) imageModifier else Modifier.fillMaxSize(),
                 contentScale = if (thumbnail) ContentScale.Crop else ContentScale.Fit)
             failure != null && thumbnail -> Box(
                 Modifier.fillMaxSize()
@@ -100,5 +116,6 @@ internal fun RemoteImage(
             }
             else -> CircularProgressIndicator()
         }
+    }
     }
 }
