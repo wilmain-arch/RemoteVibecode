@@ -1,12 +1,12 @@
 # Maintainer: wilmain <https://github.com/wilmain-arch>
 pkgname=remotevibecode-agent
-pkgver=0.3.4
+pkgver=0.4.0
 pkgrel=1
 pkgdesc='Графический агент RemoteVibecode для подключения ПК к своему ретранслятору'
 arch=('any')
 url='https://github.com/wilmain-arch/RemoteVibecode'
 license=('MIT')
-depends=('python' 'python-cryptography' 'python-pillow' 'python-qrcode' 'python-pystray' 'tk' 'fontconfig' 'hicolor-icon-theme' 'polkit')
+depends=('python' 'python-cryptography' 'python-pillow' 'python-qrcode' 'pyside6' 'qt6-svg' 'fontconfig' 'hicolor-icon-theme' 'polkit')
 makedepends=('git')
 source=("remotevibecode-source::git+https://github.com/wilmain-arch/RemoteVibecode.git#tag=arch-v$pkgver" 'LICENSE')
 sha256sums=('SKIP' '77657ae5d4913dce589fc490aa382c84027ca729806797cc7279717d42cba062')
@@ -17,8 +17,9 @@ package() {
     install -Dm644 "$srcdir/remotevibecode-source/agent/updates.py" "$appdir/agent/updates.py"
     install -Dm644 "$srcdir/remotevibecode-source/agent/update-public.pem" "$appdir/agent/update-public.pem"
     install -Dm644 "$srcdir/remotevibecode-source/agent/gui.py" "$appdir/agent/gui.py"
-    install -Dm644 "$srcdir/remotevibecode-source/agent/dashboard.py" "$appdir/agent/dashboard.py"
-    install -Dm644 "$srcdir/remotevibecode-source/agent/ui_components.py" "$appdir/agent/ui_components.py"
+    install -Dm644 "$srcdir/remotevibecode-source/agent/controller.py" "$appdir/agent/controller.py"
+    install -Dm644 "$srcdir/remotevibecode-source/agent/qt_theme.py" "$appdir/agent/qt_theme.py"
+    install -Dm644 "$srcdir/remotevibecode-source/agent/remotevibecode-tray.ico" "$appdir/agent/remotevibecode-tray.ico"
     install -Dm644 "$srcdir/remotevibecode-source/agent/remotevibecode.ico" "$appdir/agent/remotevibecode.ico"
     install -Dm644 "$srcdir/remotevibecode-source/bridge/__init__.py" "$appdir/bridge/__init__.py"
     install -Dm644 "$srcdir/remotevibecode-source/bridge/codex_path.py" "$appdir/bridge/codex_path.py"
@@ -29,8 +30,15 @@ package() {
     install -Dm755 "$srcdir/remotevibecode-source/arch/remotevibecode-agent" "$pkgdir/usr/bin/remotevibecode-agent"
     install -Dm644 "$srcdir/remotevibecode-source/arch/remotevibecode-agent.desktop" \
         "$pkgdir/usr/share/applications/remotevibecode-agent.desktop"
-    install -Dm644 "$srcdir/remotevibecode-source/arch/remotevibecode-agent.png" \
-        "$pkgdir/usr/share/icons/hicolor/256x256/apps/remotevibecode-agent.png"
+    install -Dm644 "$srcdir/remotevibecode-source/arch/remotevibecode-agent.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/remotevibecode-agent.svg"
+    local size
+    for size in 16 24 32 48 64 128 256 512; do
+        install -Dm644 "$srcdir/remotevibecode-source/arch/icons/$size/remotevibecode-agent.png" "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/remotevibecode-agent.png"
+    done
+    install -Dm644 "$srcdir/remotevibecode-source/agent/THIRD_PARTY_NOTICES.md" "$pkgdir/usr/share/licenses/remotevibecode-agent/THIRD_PARTY_NOTICES.md"
+    install -Dm644 "$srcdir/remotevibecode-source/agent/licenses/LGPL-3.0.txt" "$pkgdir/usr/share/licenses/remotevibecode-agent/LGPL-3.0.txt"
+    install -Dm644 "$srcdir/remotevibecode-source/agent/licenses/GPL-3.0.txt" "$pkgdir/usr/share/licenses/remotevibecode-agent/GPL-3.0.txt"
+    install -Dm644 "$srcdir/remotevibecode-source/agent/ui_preview.py" "$appdir/agent/ui_preview.py"
     install -Dm644 "$srcdir/LICENSE" \
         "$pkgdir/usr/share/licenses/remotevibecode-agent/LICENSE"
 }

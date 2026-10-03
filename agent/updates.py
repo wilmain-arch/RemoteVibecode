@@ -17,7 +17,7 @@ from cryptography.hazmat.primitives.asymmetric import padding
 
 REPO = 'wilmain-arch/RemoteVibecode'
 API = f'https://api.github.com/repos/{REPO}/releases/latest'
-VERSION = '0.3.4'
+VERSION = '0.4.0'
 DAY = 86400
 MAX_FILE = 300 * 1024 * 1024
 

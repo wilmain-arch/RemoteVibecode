@@ -356,7 +356,19 @@ def main() -> None:
     parser.add_argument("--apply-update", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--update-ready", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--cli", action="store_true", help="Запустить без графического интерфейса")
+    parser.add_argument("--ui-preview", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--preview-page", default="Обзор", help=argparse.SUPPRESS)
+    parser.add_argument("--preview-theme", default="light", help=argparse.SUPPRESS)
+    parser.add_argument("--preview-screenshot", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.ui_preview:
+        from agent.ui_preview import main as preview
+
+        options = ["--page", args.preview_page, "--theme", args.preview_theme]
+        if args.preview_screenshot:
+            options.extend(["--screenshot", str(args.preview_screenshot)])
+        preview(options)
+        return
     if args.apply_update:
         from agent.updates import apply
         apply(args.apply_update)

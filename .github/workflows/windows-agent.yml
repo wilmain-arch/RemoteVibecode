@@ -32,10 +32,10 @@ jobs:
       - name: Build executable
         run: >-
           python -m PyInstaller --onefile --windowed --clean --noconfirm
-          --paths . --hidden-import qrcode.image.pil --hidden-import pystray._win32
+          --paths . --hidden-import qrcode.image.pil --hidden-import PySide6.QtSvg
           --icon agent/remotevibecode.ico
           --add-data "agent/remotevibecode.ico;agent"
-          --add-data "agent/update-public.pem;agent" --name RemoteVibecodeAgent agent/windows_agent.py
+          --add-data "agent/remotevibecode-tray.ico;agent" --add-data "agent/update-public.pem;agent" --add-data "agent/licenses;agent/licenses" --add-data "agent/THIRD_PARTY_NOTICES.md;agent" --name RemoteVibecodeAgent agent/windows_agent.py
       - name: Upload executable
         uses: actions/upload-artifact@v4
         with:

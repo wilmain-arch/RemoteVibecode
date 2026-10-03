@@ -24,7 +24,11 @@ jobs:
         run: ruff check --select E9,F63,F7,F82 bridge agent relay scripts tests
       - name: Проверить компиляцию Python
         run: python -m compileall -q bridge agent relay scripts tests
+      - name: Установить зависимости Qt для тестов
+        run: python -m pip install -r agent/requirements-build.txt
       - name: Проверить регрессии
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: python -m unittest discover -s tests -v
 
   metadata:
@@ -136,9 +140,9 @@ jobs:
       - name: Собрать EXE
         run: >-
           python -m PyInstaller --onefile --windowed --clean --noconfirm
-          --paths . --hidden-import qrcode.image.pil --hidden-import pystray._win32
+          --paths . --hidden-import qrcode.image.pil --hidden-import PySide6.QtSvg
           --icon agent/remotevibecode.ico --add-data "agent/remotevibecode.ico;agent"
-          --add-data "agent/update-public.pem;agent" --name RemoteVibecodeAgent agent/windows_agent.py
+          --add-data "agent/remotevibecode-tray.ico;agent" --add-data "agent/update-public.pem;agent" --add-data "agent/licenses;agent/licenses" --add-data "agent/THIRD_PARTY_NOTICES.md;agent" --name RemoteVibecodeAgent agent/windows_agent.py
       - uses: actions/upload-artifact@v4
         with:
           name: windows-build
