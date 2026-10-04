@@ -563,8 +563,8 @@ class Material3UiTest {
         compose.waitUntil(5000) { compose.onAllNodesWithContentDescription("preview.png").fetchSemanticsNodes().isNotEmpty() }
         screenshot("focus-preview")
         compose.onNodeWithContentDescription("preview.png").performTouchInput {
-            pinch(center - androidx.compose.ui.geometry.Offset(80f, 0f), center + androidx.compose.ui.geometry.Offset(80f, 0f),
-                center - androidx.compose.ui.geometry.Offset(240f, 0f), center + androidx.compose.ui.geometry.Offset(240f, 0f))
+            pinch(center - androidx.compose.ui.geometry.Offset(center.x * .25f, 0f), center + androidx.compose.ui.geometry.Offset(center.x * .25f, 0f),
+                center - androidx.compose.ui.geometry.Offset(center.x * .75f, 0f), center + androidx.compose.ui.geometry.Offset(center.x * .75f, 0f))
         }
         screenshot("focus-preview-pinch-diagnostic")
         compose.onNodeWithText("Вернуть исходный размер").printToLog("RV-PREVIEW")
