@@ -27,15 +27,20 @@ class TaskWatchService : Service() {
         super.onCreate()
         notifications.createNotificationChannel(NotificationChannel("task-watch", "Наблюдение за задачами", NotificationManager.IMPORTANCE_LOW))
         notifications.createNotificationChannel(NotificationChannel("task-result", "Завершение и вопросы Codex", NotificationManager.IMPORTANCE_DEFAULT))
+        if (preferences.getString("taskWatchIdentity", "") == identity(this)) {
+            val saved = runCatching { org.json.JSONObject(preferences.getString("taskWatches", "{}").orEmpty()) }.getOrDefault(org.json.JSONObject())
+            saved.keys().forEach { key -> watches[key] = saved.optString(key) }
+        } else clearSaved(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val thread = intent?.getStringExtra("threadId").orEmpty()
         val turn = intent?.getStringExtra("turnId").orEmpty()
-        if (!preferences.getBoolean("taskNotifications", false) || thread.isBlank() || turn.isBlank()) {
+        if (!preferences.getBoolean("taskNotifications", false) || (watches.isEmpty() && (thread.isBlank() || turn.isBlank()))) {
             stopSelf(); return START_NOT_STICKY
         }
-        watches.putIfAbsent(thread, turn)
+        if (thread.isNotBlank() && turn.isNotBlank()) watches.putIfAbsent(thread, turn)
+        persistWatches()
         val notification = statusNotification("Ожидаю завершения Codex")
         if (Build.VERSION.SDK_INT >= 29) startForeground(7001, notification,
             if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING else 0)
@@ -46,7 +51,12 @@ class TaskWatchService : Service() {
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         }
-        return START_NOT_STICKY
+        return START_STICKY
+    }
+
+    private fun persistWatches() {
+        preferences.edit().putString("taskWatches", org.json.JSONObject(watches.toMap()).toString())
+            .putString("taskWatchIdentity", identity(this)).commit()
     }
 
     private suspend fun monitor() {
@@ -59,7 +69,7 @@ class TaskWatchService : Service() {
                 if (!preferences.getBoolean("taskNotifications", false)) break
                 val token = readSavedToken(this, preferences)
                 if (token.isBlank() || token != initialToken || preferences.getString("certificatePin", "") != pin ||
-                    preferences.getString("host", "") != initialHost) { watches.clear(); break }
+                    preferences.getString("host", "") != initialHost) { watches.clear(); clearSaved(this); break }
                 val host = preferences.getString("host", "").orEmpty()
                 val tail = preferences.getString("tailHost", "").orEmpty()
                 val hosts = (if (BuildConfig.RELAY_ONLY) listOf(host) else listOf(host, tail)).filter { it.startsWith("https://") }.distinct()
@@ -74,6 +84,7 @@ class TaskWatchService : Service() {
                                 notifyOnce("request:${prompt.optString("id")}", thread, "Codex ожидает ответа", "Откройте чат, чтобы ответить на вопрос или запрос разрешения.")
                             }
                             finishIfReady(task, thread, expectedTurn)
+                            persistWatches()
                             connected = true
                             break
                         } catch (cancel: CancellationException) { throw cancel }
@@ -135,6 +146,20 @@ class TaskWatchService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
+        private fun identity(context: Context): String {
+            val prefs = context.getSharedPreferences("companion", Context.MODE_PRIVATE)
+            val source = listOf(prefs.getString("host", ""), prefs.getString("certificatePin", ""), readSavedToken(context, prefs)).joinToString("\n")
+            return java.security.MessageDigest.getInstance("SHA-256").digest(source.toByteArray()).joinToString("") { "%02x".format(it) }
+        }
+        internal fun clearSaved(context: Context) {
+            context.getSharedPreferences("companion", Context.MODE_PRIVATE).edit()
+                .remove("taskWatches").remove("taskWatchIdentity").commit()
+        }
+        internal fun restore(context: Context) {
+            val prefs = context.getSharedPreferences("companion", Context.MODE_PRIVATE)
+            if (prefs.getBoolean("taskNotifications", false) && canNotify(context) && prefs.getString("taskWatchIdentity", "") == identity(context) && prefs.getString("taskWatches", "{}").orEmpty() != "{}")
+                ContextCompat.startForegroundService(context, Intent(context, TaskWatchService::class.java))
+        }
         internal fun canNotify(context: Context) = Build.VERSION.SDK_INT < 33 ||
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
         internal fun watch(context: Context, threadId: String, turnId: String) {

@@ -40,9 +40,7 @@ import androidx.compose.ui.unit.dp
 internal fun isSupportedImage(name: String): Boolean = name.substringAfterLast('.', "").lowercase() in
     setOf("jpg", "jpeg", "png", "webp", "gif", "bmp")
 
-private val imageCache = object : LruCache<String, Bitmap>(12 * 1024 * 1024) {
-    override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
-}
+internal val LocalImageScope = androidx.compose.runtime.compositionLocalOf { "" }
 
 @Composable
 internal fun RemoteImage(
@@ -53,15 +51,17 @@ internal fun RemoteImage(
     thumbnail: Boolean = false,
     adaptivePreview: Boolean = false,
 ) {
-    val key = endpoint + if (thumbnail) "&size=thumb" else ""
-    var bitmap by remember(key) { mutableStateOf(imageCache.get(key)) }
+    val url = endpoint + if (thumbnail) "&size=thumb" else ""
+    val key = LocalImageScope.current + url
+    // Keep only this view's bitmap; reopening/refreshing must revalidate mutable files.
+    var bitmap by remember(key) { mutableStateOf<Bitmap?>(null) }
     var failure by remember(key) { mutableStateOf<String?>(null) }
     var retryToken by remember(key) { mutableIntStateOf(0) }
     LaunchedEffect(key, retryToken) {
         if (bitmap == null) {
             failure = null
             runCatching {
-                val bytes = loadImage(key)
+                val bytes = loadImage(url)
                 withContext(Dispatchers.Default) {
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
@@ -74,7 +74,6 @@ internal fun RemoteImage(
                     ?: error("Не удалось открыть изображение")
                 }
             }.onSuccess {
-                imageCache.put(key, it)
                 bitmap = it
             }.onFailure { if (it is CancellationException) throw it; failure = it.message?.takeIf(String::isNotBlank) ?: "Ошибка загрузки изображения" }
         }

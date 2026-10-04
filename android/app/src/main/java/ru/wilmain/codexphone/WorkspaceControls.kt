@@ -47,10 +47,13 @@ private val ControlFormSaver = Saver<ControlForm?, String>(
 internal fun WorkspaceControls(threadId: String, title: String,
     initialTurn: String = "", request: suspend (String, JSONObject?) -> JSONObject,
     onClose: () -> Unit, onSelect: (String) -> Unit,
-    onJump: (String) -> Unit, onChanged: () -> Unit, compatibilityNote: String = "") {
+    onJump: (String) -> Unit, onChanged: () -> Unit, compatibilityNote: String = "", onProjectFile: (String) -> Unit = {}) {
     if(compatibilityNote.isNotBlank()) {
         Scaffold(topBar={UiScreenHeader(title="Инструменты чата",subtitle=title,onBack=onClose)}) { padding ->
-            Text(compatibilityNote,Modifier.padding(padding).padding(24.dp),color=MaterialTheme.colorScheme.onSurfaceVariant)
+            Column(Modifier.padding(padding).padding(24.dp)) {
+                Text(compatibilityNote, color=MaterialTheme.colorScheme.onSurfaceVariant)
+                TextButton(onClick=onChanged, modifier=Modifier.heightIn(min=48.dp)) { Text("Повторить проверку") }
+            }
         }
         return
     }
@@ -181,8 +184,8 @@ internal fun WorkspaceControls(threadId: String, title: String,
                             Text(if(current==null) "План ещё не создан" else if(data.optString("currentPlanStatus") in listOf("inProgress", "active"))
                                 "Codex составляет новый план. Ход работы доступен в чате." else "В этом ходе план не опубликован. Посмотрите ответ в чате.")
                         }
-                        items(currentPlans) { plan -> SelectionContainer { MarkdownContent(plan.optString("text")) } }
-                        items(currentPublished) { plan -> PublishedPlanContent(plan) }
+                        items(currentPlans) { plan -> SelectionContainer { MarkdownContent(plan.optString("text"), onProjectFile = onProjectFile) } }
+                        items(currentPublished) { plan -> PublishedPlanContent(plan, onProjectFile) }
                         val goal=data.optJSONObject("goal")
                         item { Text("Цель",style=MaterialTheme.typography.titleMedium) }
                         if (goal != null) {
@@ -277,11 +280,11 @@ internal fun WorkspaceControls(threadId: String, title: String,
 private fun Modifier.verticalScrollCompat(): Modifier = this.then(Modifier.verticalScroll(rememberScrollState()))
 
 @Composable
-private fun PublishedPlanContent(plan: JSONObject) {
-    if(plan.optString("explanation").isNotBlank()) Text(plan.optString("explanation"))
+private fun PublishedPlanContent(plan: JSONObject, onProjectFile: (String) -> Unit) {
+    if(plan.optString("explanation").isNotBlank()) MarkdownContent(plan.optString("explanation"), onProjectFile = onProjectFile)
     (plan.optJSONArray("steps")?:JSONArray()).objects().forEach { step ->
         val state=when(step.optString("status")){"completed"->"Готово";"inProgress"->"Выполняется";else->"Ожидает"}
         Text(state,style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.secondary)
-        Text(step.optString("step"),modifier=Modifier.padding(bottom=8.dp))
+        MarkdownContent(step.optString("step"), onProjectFile = onProjectFile)
     }
 }

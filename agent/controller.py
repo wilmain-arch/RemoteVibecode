@@ -69,6 +69,10 @@ class AgentController(QObject):
         self.events.received.connect(self.consume, Qt.ConnectionType.QueuedConnection)
         self.stop = threading.Event()
         self.started = self.bridge_ready = self.relay_ready = False
+        self.codex_ready = False
+        self.health_busy = False
+        self.health_last_checked = 0
+        self.health_generation = 0
         self.error = self.message = self.pairing_path = ""
         self.operation_busy = False
         self.configured = True if offline_preview else config_path.is_file()
@@ -140,8 +144,18 @@ class AgentController(QObject):
                         self.release_update_lock()
                         self.update_waiting = False
                         self.update_error = f"Не удалось начать установку: {exc}"
+        elif event[0] == "health":
+            if len(event) > 2 and event[2] != self.health_generation:
+                return
+            self.health_busy = False
+            self.codex_ready = self.bridge_ready and bool(event[1].get("codexReady"))
+        elif event[0] == "stopped":
+            self.health_generation += 1
+            self.health_busy = False
+            self.started = self.bridge_ready = self.relay_ready = self.codex_ready = False
         elif event[0] == "bridge":
             self.bridge_ready = event[1]
+            if self.bridge_ready: self.check_health(probe=True)
         elif event[0] == "relay":
             self.relay_ready = event[1]
             if len(event) > 2:
@@ -166,7 +180,32 @@ class AgentController(QObject):
                 self.error = text
         self.changed.emit()
 
+    def check_health(self, probe=False):
+        if self.offline_preview or not self.bridge_ready or self.health_busy:
+            return
+        self.health_busy = True
+        self.health_last_checked = time.monotonic()
+        config = dict(self.active_config)
+        generation = self.health_generation
+        def work():
+            result = {"codexReady": False}
+            try:
+                state = json.loads((self.config_path.parent / "state.json").read_text())
+                cert = self.config_path.parent / "bridge.crt"
+                tls = ssl.create_default_context(cafile=str(cert))
+                tls.check_hostname = False  # Trust this exact local certificate, whose CN is the app name.
+                req = request.Request(f"https://127.0.0.1:{config['bridgePort']}/api/health?probe={'true' if probe else 'false'}",
+                                      headers={"Authorization": "Bearer " + state["token"]})
+                with request.urlopen(req, context=tls, timeout=12) as response:
+                    result = json.load(response)
+            except Exception:
+                pass
+            self.events.put(("health", result, generation))
+        threading.Thread(target=work, daemon=True).start()
+
     def refresh_state(self):
+        if time.monotonic() - self.health_last_checked > 15:
+            self.check_health()
         now = self.paired()
         if now != self.last_paired or (
             self.pairing_path and not Path(self.pairing_path).is_file()
@@ -301,6 +340,8 @@ class AgentController(QObject):
                 )
             except Exception as exc:
                 self.events.put(("error", str(exc)))
+            finally:
+                self.events.put(("stopped",))
 
         threading.Thread(target=worker, daemon=True).start()
 

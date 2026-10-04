@@ -543,13 +543,13 @@ class AgentWindow(QMainWindow):
         c = self.controller
         paired = c.paired()
         self.title.setText(
-            ("Ваш компьютер готов" if c.bridge_ready and c.relay_ready else "Обзор")
+            ("Ваш компьютер готов" if c.bridge_ready and c.codex_ready and c.relay_ready else "Обзор")
             if self.page == "Обзор"
             else self.page
         )
         subtitles = {
-            "Обзор": "● Codex подключён"
-            if c.bridge_ready
+            "Обзор": "● Codex доступен"
+            if c.codex_ready
             else "Проверяем соединение с Codex и сервером.",
             "Устройства": "Привязка телефона к этому компьютеру.",
             "Подключение": "Ваш сервер и состояние защищённого канала.",
@@ -611,8 +611,8 @@ class AgentWindow(QMainWindow):
         for w in [self.status_codex, self.connection_codex]:
             w.set_status(
                 "Codex на этом ПК",
-                "Активен" if c.bridge_ready else "Ожидание",
-                c.bridge_ready,
+                "Доступен" if c.codex_ready else "Не подтверждён",
+                c.codex_ready,
                 self.colors,
             )
         for w in [self.status_relay, self.connection_relay]:

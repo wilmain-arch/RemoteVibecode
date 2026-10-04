@@ -316,6 +316,11 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
     var usageLimits by remember { mutableStateOf<UsageLimits?>(null) }
     var limitsLoading by remember { mutableStateOf(false) }
     var limitsError by remember { mutableStateOf("") }
+    LaunchedEffect(taskNotifications, token) {
+        if (taskNotifications && token.isNotBlank()) {
+            runCatching { TaskWatchService.restore(context) }
+        }
+    }
     var connectionState by remember { mutableStateOf(ConnectionState.Connecting) }
     var codexBusy by remember { mutableStateOf(false) }
     var selectedThreadId by remember { mutableStateOf(prefs.getString("selectedThreadId", "") ?: "") }
@@ -333,6 +338,7 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
     var lines by remember { mutableStateOf<List<ChatLine>>(emptyList()) }
     var historyHasMore by remember { mutableStateOf(false) }
     var olderPagesLoaded by remember { mutableStateOf(false) }
+    var historyGeneration by remember { mutableIntStateOf(0) }
     var loadingOlder by remember { mutableStateOf(false) }
     var historyError by remember { mutableStateOf("") }
     var historyReady by remember { mutableStateOf(false) }
@@ -353,6 +359,7 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
     var workspaceRevision by remember { mutableIntStateOf(0) }
     val workspacePrefs = remember { context.getSharedPreferences("workspace-display", 0) }
     var workspaceRoot by remember { mutableStateOf("") }
+    var workspaceThreadId by rememberSaveable { mutableStateOf(selectedThreadId) }
     var workspacePath by rememberSaveable { mutableStateOf("") }
     var workspaceEntries by remember { mutableStateOf<List<WorkspaceEntry>>(emptyList()) }
     var workspaceLoading by remember { mutableStateOf(false) }
@@ -539,6 +546,7 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
     suspend fun refresh() {
         if (token.isBlank()) return
         val requestedThreadId = selectedThreadId
+        val requestedGeneration = historyGeneration
         val threadQuery = if (requestedThreadId.isBlank()) "" else "?threadId=${Uri.encode(requestedThreadId)}"
         if (!historyReady) {
             initialHistoryLoading = true
@@ -547,20 +555,20 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
         try {
             val pair = withReachableHost { root ->
                 withContext(Dispatchers.IO) {
-                    try {
-                        val caps=requestJson(client,"$root/api/capabilities",token)
-                        val compatible=caps.optInt("protocolVersion")==1
-                        workspaceAdvanced=compatible && caps.optJSONObject("features")?.optBoolean("workspacePaging")==true
-                        compatibilityNote=if(compatible && caps.optJSONObject("features")?.optBoolean("controls")==true) "" else "Версия агента несовместима. Обновите агент на ПК."
-                    } catch(cancel:CancellationException) { throw cancel }
-                    catch(error:Exception) { workspaceAdvanced=false;compatibilityNote="Совместимость не подтверждена. Обновите агент на ПК или повторите подключение." }
-                    requestJson(client, "$root/api/status$threadQuery", token) to
-                        requestJson(client, "$root/api/history$threadQuery", token)
+                    val caps = try { requestJson(client, "$root/api/capabilities", token) }
+                    catch (cancel: CancellationException) { throw cancel }
+                    catch (error: Exception) { JSONObject().put("probeError", true) }
+                    Triple(requestJson(client, "$root/api/status$threadQuery", token),
+                        requestJson(client, "$root/api/history$threadQuery", token), caps)
                 }
             }
-            val (state, history) = pair
+            val (state, history, caps) = pair
             withContext(Dispatchers.Main) {
-                if (requestedThreadId.isNotBlank() && requestedThreadId != selectedThreadId) return@withContext
+                if (requestedGeneration != historyGeneration || (requestedThreadId.isNotBlank() && requestedThreadId != selectedThreadId)) return@withContext
+                val compatible = caps.optInt("protocolVersion") == 1
+                workspaceAdvanced = compatible && caps.optJSONObject("features")?.optBoolean("workspacePaging") == true
+                compatibilityNote = if (compatible && caps.optJSONObject("features")?.optBoolean("controls") == true) ""
+                    else "Совместимость не подтверждена. Обновите агент или повторите проверку."
                 if (selectedThreadId.isBlank()) {
                     selectedThreadId = state.optString("threadId")
                     prefs.edit().putString("selectedThreadId", selectedThreadId).apply()
@@ -591,13 +599,17 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
                     busy -> "Codex отвечает…"
                     else -> "Подключено"
                 }
+                val queueThread = selectedThreadId
                 try {
                     val snapshot = withReachableHost { root -> withContext(Dispatchers.IO) {
-                        requestJson(client, "$root/api/control?section=queue&threadId=${Uri.encode(selectedThreadId)}", token)
+                        requestJson(client, "$root/api/control?section=queue&threadId=${Uri.encode(queueThread)}", token)
                     } }
+                    if (requestedGeneration != historyGeneration || queueThread != selectedThreadId) return@withContext
                     val cancelled = snapshot.optJSONArray("cancelledIds") ?: JSONArray()
                     val cancelledIds = (0 until cancelled.length()).mapTo(HashSet()) { cancelled.optString(it) }
-                    localQueue.removeAll { it.id in cancelledIds }
+                    val dismissed = snapshot.optJSONArray("dismissedIds") ?: JSONArray()
+                    val dismissedIds = (0 until dismissed.length()).mapTo(HashSet()) { dismissed.optString(it) }
+                    localQueue.removeAll { it.id in cancelledIds || it.id in dismissedIds }
                     val receipts = snapshot.optJSONObject("receipts") ?: JSONObject()
                     val tracked = (snapshot.optJSONArray("nativeTracking")?:JSONArray()).objects().associateBy { it.optString("id") }
                     for(index in localQueue.indices) tracked[localQueue[index].id]?.let { msg ->
@@ -611,12 +623,13 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
                     desktopQueue = (snapshot.optJSONArray("data") ?: JSONArray()).objects().map { msg ->
                         val text = (msg.optJSONArray("input") ?: JSONArray()).objects().filter { it.optString("type") == "text" }.joinToString("\n") { it.optString("text") }
                         LocalMessage(msg.optString("clientUserMessageId").ifBlank { msg.optString("id") }, text, emptyList(),
-                            threadId = selectedThreadId, acceptedByBridge = true, nativeSubmissionId = msg.optString("id"))
+                            threadId = queueThread, acceptedByBridge = true, nativeSubmissionId = msg.optString("id"))
                     }
                 } catch (cancel: CancellationException) { throw cancel }
                 catch (failure: Exception) {
-                    if (desktopQueue.isNotEmpty()) status = "Очередь не обновлена: ${failure.message}"
+                    if (requestedGeneration == historyGeneration && queueThread == selectedThreadId && desktopQueue.isNotEmpty()) status = "Очередь не обновлена: ${failure.message}"
                 }
+                if (requestedGeneration != historyGeneration || queueThread != selectedThreadId) return@withContext
                 val latest = parseHistory(history)
                 historyReady = true
                 initialHistoryLoading = false
@@ -636,11 +649,7 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
                     lines = latest
                     historyHasMore = history.optBoolean("hasMore")
                 } else {
-                    val latestIds = latest.mapTo(HashSet()) { it.id }
-                    val combined = LinkedHashMap<String, ChatLine>()
-                    lines.filterNot { it.id in latestIds }.forEach { combined[it.id] = it }
-                    latest.forEach { combined[it.id] = it }
-                    lines = combined.values.toList()
+                    lines = mergeHistorySnapshot(lines, latest, history)
                     if (!olderPagesLoaded) historyHasMore = history.optBoolean("hasMore")
                 }
             }
@@ -658,17 +667,19 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
     suspend fun browseWorkspace(path: String, clearPreview: Boolean = true, query: String = "",
         hidden: Boolean = workspacePrefs.getBoolean("hidden",false), service: Boolean = workspacePrefs.getBoolean("service",false), cursor: String = "") {
         val revision = ++workspaceRevision
-        val thread = selectedThreadId
+        val thread = workspaceThreadId.ifBlank { selectedThreadId }
+        if (workspaceThreadId.isBlank()) workspaceThreadId = thread
+        val sameFolder = workspacePath == path
         workspacePath = path
         workspaceLoading = true
         workspaceError = ""
-        if(cursor.isBlank()) { workspaceEntries = emptyList(); workspaceNextCursor = "" }
-        if (clearPreview) previewPath = ""
+        if (cursor.isBlank() && !sameFolder) { workspaceEntries = emptyList(); workspaceNextCursor = "" }
         try {
             val result = withReachableHost { root -> withContext(Dispatchers.IO) {
                 requestJson(client, "$root/api/workspace?threadId=${Uri.encode(thread)}&path=${Uri.encode(path)}&query=${Uri.encode(query)}&hidden=$hidden&service=$service&cursor=${Uri.encode(cursor)}", token)
             } }
-            if (thread == selectedThreadId && path == workspacePath && revision == workspaceRevision) {
+            if (thread == workspaceThreadId && path == workspacePath && revision == workspaceRevision) {
+                if (clearPreview) previewPath = ""
                 workspaceRoot = result.optString("rootName")
                 val entries = result.optJSONArray("entries") ?: JSONArray()
                 val page = (0 until entries.length()).mapNotNull { index ->
@@ -682,16 +693,27 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
             }
         } catch(cancel: CancellationException) { throw cancel }
         catch (error: Exception) {
-            if (thread == selectedThreadId && path == workspacePath && revision == workspaceRevision)
+            if (thread == workspaceThreadId && path == workspacePath && revision == workspaceRevision)
                 workspaceError = "Не удалось открыть папку: ${error.message}"
         } finally {
-            if (thread == selectedThreadId && path == workspacePath && revision == workspaceRevision) workspaceLoading = false
+            if (thread == workspaceThreadId && path == workspacePath && revision == workspaceRevision) workspaceLoading = false
         }
+    }
+
+    suspend fun resolveProjectFile(reference: String, sourceThread: String): String? {
+        return try {
+            val response = withReachableHost { root -> withContext(Dispatchers.IO) {
+                requestJson(client, "$root/api/workspace/resolve?threadId=${Uri.encode(sourceThread)}&path=${Uri.encode(reference)}", token)
+            } }
+            workspaceThreadId = sourceThread
+            response.optString("folder")
+        } catch (cancel: CancellationException) { throw cancel }
+        catch (failure: Exception) { status = "Не удалось открыть файл проекта: ${failure.message}"; null }
     }
 
     suspend fun previewWorkspace(path: String) {
         if (path.isBlank()) { previewPath = ""; return }
-        val thread = selectedThreadId
+        val thread = workspaceThreadId.ifBlank { selectedThreadId }
         previewPath = path
         previewText = ""
         previewNote = ""
@@ -704,17 +726,17 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
             val result = withReachableHost { root -> withContext(Dispatchers.IO) {
                 requestJson(client, "$root/api/workspace/preview?threadId=${Uri.encode(thread)}&path=${Uri.encode(path)}", token)
             } }
-            if (thread == selectedThreadId && path == previewPath) {
+            if (thread == workspaceThreadId && path == previewPath) {
                 if (result.optBoolean("previewable")) {
                     previewText = result.optString("text")
                     if (result.optBoolean("truncated")) previewNote = "Показано начало файла. Полную версию можно сохранить."
                 } else previewNote = result.optString("reason", "Предпросмотр недоступен")
             }
         } catch (error: Exception) {
-            if (thread == selectedThreadId && path == previewPath)
+            if (thread == workspaceThreadId && path == previewPath)
                 previewNote = "Не удалось открыть файл: ${error.message}"
         } finally {
-            if (thread == selectedThreadId && path == previewPath) previewLoading = false
+            if (thread == workspaceThreadId && path == previewPath) previewLoading = false
         }
     }
 
@@ -828,6 +850,8 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
             }
         }
         prefs.edit().putString("draft:$selectedThreadId", input).apply()
+        historyGeneration++
+        workspaceThreadId = threadId
         selectedThreadId = threadId
         desktopQueue = emptyList()
         activeTurnId = ""
@@ -863,6 +887,8 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
         }
         val id = result.getString("threadId")
         prefs.edit().putString("draft:$selectedThreadId", input).apply()
+        historyGeneration++
+        workspaceThreadId = id
         selectedThreadId = id
         prefs.edit().putString("selectedThreadId", id).apply()
         input = ""
@@ -898,6 +924,8 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
         prefs.edit().remove("draft:$threadId").apply()
         val nextId = result.optString("selectedThreadId")
         if (selectedThreadId == threadId && nextId.isNotBlank()) {
+            historyGeneration++
+            workspaceThreadId = nextId
             selectedThreadId = nextId
             prefs.edit().putString("selectedThreadId", nextId).apply()
             input = prefs.getString("draft:$nextId", "") ?: ""
@@ -941,6 +969,8 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
         activeHost = result.activeHost
         token = result.token
         certificatePin = result.fingerprint
+        historyGeneration++
+        workspaceThreadId = result.threadId
         selectedThreadId = result.threadId
         prefs.edit().putString("selectedThreadId", selectedThreadId).apply()
         selectedModel = ""
@@ -960,8 +990,9 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
         status = "Подключено"
     }
 
-    suspend fun cancelQueued(messageId: String) {
-        val body = JSONObject().put("clientMessageId", messageId).toString()
+    suspend fun cancelQueued(messageId: String, dismissUnknown: Boolean = false) {
+        val body = JSONObject().put("clientMessageId", messageId).put("dismissUnknown", dismissUnknown)
+            .put("confirmed", dismissUnknown).toString()
             .toRequestBody("application/json".toMediaType())
         val result = withReachableHost { root -> withContext(Dispatchers.IO) {
             val request = Request.Builder().url("$root/api/messages/cancel")
@@ -975,6 +1006,7 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
         saveLocalQueue(prefs, localQueue.toList())
         localQueueError = ""
         status = if (result.optString("status") == "sent") "Сообщение уже отправлено"
+            else if (result.optString("status") == "dismissed") "Уведомление скрыто. Исход задачи в Desktop не подтверждён"
             else "Сообщение убрано из очереди"
     }
 
@@ -1013,6 +1045,8 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
                 val actualThreadId = result.optString("threadId")
                 if (actualThreadId.isNotBlank() && actualThreadId != message.threadId) {
                     if (selectedThreadId == message.threadId) {
+                        historyGeneration++
+                        workspaceThreadId = actualThreadId
                         selectedThreadId = actualThreadId
                         prefs.edit().putString("selectedThreadId", actualThreadId).apply()
                     }
@@ -1160,6 +1194,7 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
             }
         }
     }
+    androidx.compose.runtime.CompositionLocalProvider(LocalImageScope provides "$host:$certificatePin:$workspaceRevision") {
     MaterialTheme(colorScheme = if (darkTheme) darkPalette else lightPalette, typography = appTypography) {
         if (updatesOpen) UpdatesScreen(updates, onClose = { updatesOpen = false })
         else CompanionUi(
@@ -1169,6 +1204,7 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
                 if (taskNotifications) {
                     taskNotifications = false
                     prefs.edit().putBoolean("taskNotifications", false).apply()
+                    TaskWatchService.clearSaved(context)
                     context.stopService(Intent(context, TaskWatchService::class.java))
                 } else if (android.os.Build.VERSION.SDK_INT >= 33 && !TaskWatchService.canNotify(context)) {
                     notificationPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
@@ -1373,25 +1409,32 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
             onBrowseWorkspace = { path -> scope.launch { browseWorkspace(path) } },
             onPreviewWorkspace = { path -> scope.launch { previewWorkspace(path) } },
             onAskWorkspace = { path ->
-                val prompt = "Посмотри файл `$path` в проекте. "
-                input = if (input.isBlank()) prompt else "$input\n$prompt"
-                prefs.edit().putString("draft:$selectedThreadId", input).apply()
+                val sourceThread = workspaceThreadId
+                val targetThread = selectedThreadId
+                scope.launch {
+                    try {
+                        val result = withReachableHost { root -> withContext(Dispatchers.IO) {
+                            requestJson(client, "$root/api/workspace/resolve?threadId=${Uri.encode(sourceThread)}&path=${Uri.encode(path)}", token)
+                        } }
+                        if (selectedThreadId == targetThread) {
+                            val absolute = result.optString("absolutePath")
+                            if (absolute.isBlank() && sourceThread != targetThread) error("Обновите агент для передачи пути файла из другого чата")
+                            val prompt = "Посмотри файл `${absolute.ifBlank { path }}`. "
+                            input = if (input.isBlank()) prompt else "$input\n$prompt"
+                            prefs.edit().putString("draft:$selectedThreadId", input).apply()
+                        }
+                    } catch (cancel: CancellationException) { throw cancel }
+                    catch (error: Exception) { workspaceError = "Не удалось добавить файл: ${error.message}" }
+                }
             },
             onSaveWorkspace = { entry ->
-                selectedOutbox = RemoteFile("", entry.name, entry.size, entry.path, selectedThreadId)
+                selectedOutbox = RemoteFile("", entry.name, entry.size, entry.path, workspaceThreadId)
                 fileStatus = ""
                 savePicker.launch(entry.name)
             },
-            onResolveProjectFile = { reference ->
-                runCatching {
-                    val response = withReachableHost { root -> withContext(Dispatchers.IO) {
-                        requestJson(client,
-                            "$root/api/workspace/resolve?threadId=${Uri.encode(selectedThreadId)}&path=${Uri.encode(reference)}",
-                            token)
-                    } }
-                    response.optString("folder")
-                }.onFailure { status = "Не удалось открыть файл проекта: ${it.message}" }.getOrNull()
-            },
+            onResolveProjectFile = { reference -> resolveProjectFile(reference, selectedThreadId) },
+            onResolveContextFile = { reference, source -> resolveProjectFile(reference, source) },
+            workspaceThreadId = workspaceThreadId,
             onSaveChatImage = { image ->
                 selectedChatImage = image
                 saveChatImagePicker.launch(image.name.ifBlank { "image.png" })
@@ -1420,7 +1463,10 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
                 }
             },
             onCancelQueued = { message ->
-                if (message.nativeSubmissionId.isNotBlank()) {
+                if (message.queueState == "checking") {
+                    scope.launch { runCatching { cancelQueued(message.id, dismissUnknown = true) }
+                        .onFailure { status = "Не удалось скрыть: ${it.message}" } }
+                } else if (message.nativeSubmissionId.isNotBlank()) {
                     scope.launch {
                         try {
                             val payload = JSONObject().put("threadId", message.threadId).put("action", "queue-delete").put("submissionId", message.nativeSubmissionId)
@@ -1436,7 +1482,7 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
                     }
                 }
                 val index = localQueue.indexOfFirst { it.id == message.id }
-                if (index >= 0 && message.nativeSubmissionId.isBlank()) {
+                if (index >= 0 && message.nativeSubmissionId.isBlank() && message.queueState != "checking") {
                     localQueue[index] = localQueue[index].copy(cancelRequested = true)
                     saveLocalQueue(prefs, localQueue.toList())
                     scope.launch { runCatching { cancelQueued(message.id) }
@@ -1483,6 +1529,7 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
             },
             onDisconnect = { disconnectDevice() },
         )
+    }
     }
 
 }
@@ -1534,7 +1581,7 @@ private suspend fun uploadFile(context: Context, client: OkHttpClient, host: Str
     }
 }
 
-private suspend fun downloadFile(
+internal suspend fun downloadFile(
     context: Context, client: OkHttpClient, host: String, token: String,
     file: RemoteFile, destination: Uri, activeCall: AtomicReference<Call?>,
     onProgress: suspend (Long, Long) -> Unit
@@ -1547,6 +1594,7 @@ private suspend fun downloadFile(
     val call = client.newCall(request)
     activeCall.set(call)
     val cancellation = currentCoroutineContext().job.invokeOnCompletion { if (it != null) call.cancel() }
+    val staged = File.createTempFile("verified-download-", ".part", context.cacheDir)
     try { call.execute().use { response ->
             if (!response.isSuccessful) error("ПК вернул ошибку ${response.code}")
             val expected = response.header("X-Content-SHA256") ?: error("Нет контрольной суммы")
@@ -1554,7 +1602,7 @@ private suspend fun downloadFile(
             val stream = response.body?.byteStream() ?: error("Файл пуст")
             val total = response.body?.contentLength()?.takeIf { it > 0 } ?: file.size
             var written = 0L
-            context.contentResolver.openOutputStream(destination, "rwt")?.use { output ->
+            staged.outputStream().use { output ->
                 val buffer = ByteArray(64 * 1024)
                 while (true) {
                     val count = stream.read(buffer)
@@ -1564,10 +1612,14 @@ private suspend fun downloadFile(
                     written += count
                     withContext(Dispatchers.Main) { onProgress(written, total) }
                 }
-            } ?: error("Не удалось записать файл")
+            }
             val actual = digest.digest().joinToString("") { "%02x".format(it) }
             check(actual.equals(expected, ignoreCase = true)) { "Контрольная сумма не совпала" }
-    } } finally { cancellation.dispose(); activeCall.compareAndSet(call, null) }
+            currentCoroutineContext().ensureActive()
+            context.contentResolver.openOutputStream(destination, "rwt")?.use { output ->
+                staged.inputStream().use { input -> input.copyTo(output) }
+            } ?: error("Не удалось записать файл")
+    } } finally { staged.delete(); cancellation.dispose(); activeCall.compareAndSet(call, null) }
 }
 
 internal fun requestJson(client: OkHttpClient, url: String, token: String): JSONObject {

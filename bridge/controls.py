@@ -102,10 +102,11 @@ class Controls:
                 if hasattr(b, 'reconcile_native_queue') and not data.get('cursor'):
                     b.reconcile_native_queue(tid, rpc, result)
                 with b.queue_lock:
-                    result['nativeTracking'] = [dict(m, id=k) for k,m in b.queued_sends.items() if m.get('threadId') == tid and m.get('nativeId')]
-                    result['bridgeQueue'] = [dict(m, id=k) for k,m in b.queued_sends.items() if m.get('threadId') == tid and not m.get('nativeId')]
+                    result['nativeTracking'] = [dict(m, id=k) for k,m in b.queued_sends.items() if m.get('threadId') == tid and (m.get('nativeId') or m.get('nativePending'))]
+                    result['bridgeQueue'] = [dict(m, id=k) for k,m in b.queued_sends.items() if m.get('threadId') == tid and not (m.get('nativeId') or m.get('nativePending'))]
                 with b.state_lock:
                     result['cancelledIds'] = list(b.cancelled_sends)[-512:]
+                    result['dismissedIds'] = list(getattr(b, 'dismissed_sends', {}))
                     result['receipts'] = {mid:r for mid,r in b.sent_messages.items() if r.get('threadId') == tid}
                 return result
             if section == 'projects':

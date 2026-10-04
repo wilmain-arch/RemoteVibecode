@@ -1,6 +1,6 @@
 # Maintainer: wilmain <https://github.com/wilmain-arch>
 pkgname=remotevibecode-agent
-pkgver=0.4.3
+pkgver=1.0.0
 pkgrel=1
 pkgdesc='Графический агент RemoteVibecode для подключения ПК к своему ретранслятору'
 arch=('any')
@@ -8,6 +8,7 @@ url='https://github.com/wilmain-arch/RemoteVibecode'
 license=('MIT')
 depends=('python' 'python-cryptography' 'python-pillow' 'python-qrcode' 'pyside6' 'qt6-svg' 'fontconfig' 'hicolor-icon-theme' 'polkit')
 makedepends=('git')
+optdepends=('git: статус, diff, ветки, коммиты и worktrees' 'android-tools: подключение и управление ADB')
 source=("remotevibecode-source::git+https://github.com/wilmain-arch/RemoteVibecode.git#tag=arch-v$pkgver" 'LICENSE')
 sha256sums=('SKIP' '77657ae5d4913dce589fc490aa382c84027ca729806797cc7279717d42cba062')
 

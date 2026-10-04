@@ -33,6 +33,40 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: python -m unittest discover -s tests -v
 
+  linux-package-validation:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image: ['debian:13', 'ubuntu:26.04']
+    container: ${{ matrix.image }}
+    steps:
+      - name: Установить средства проверки пакета
+        run: apt-get update && apt-get install -y ca-certificates git python3 openssl systemd binutils
+      - uses: actions/checkout@v4
+      - name: Собрать и установить ретранслятор
+        run: |
+          bash relay/build-deb.sh
+          dpkg -i dist/remotevibecode-relay_*_all.deb
+          python3 -m py_compile /usr/lib/remotevibecode/relay.py
+          systemd-analyze verify /usr/lib/systemd/system/remotevibecode-relay.service
+          test -s /etc/remotevibecode/relay-secret
+          test "$(stat -c %a /etc/remotevibecode/relay-key)" = 600
+      - name: Проверить установленный процесс и открытие портов
+        run: |
+          CREDENTIALS_DIRECTORY=/etc/remotevibecode python3 -u /usr/lib/remotevibecode/relay.py > /tmp/relay.log 2>&1 &
+          relay_pid=$!
+          trap 'kill "$relay_pid" 2>/dev/null || true' EXIT
+          python3 - <<'PYTHON'
+          import socket, time
+          for port in (8765, 8766, 8767):
+              for attempt in range(100):
+                  try:
+                      with socket.create_connection(('127.0.0.1', port), timeout=.2): break
+                  except OSError:
+                      if attempt == 99: raise
+                      time.sleep(.05)
+          PYTHON
+
   metadata:
     runs-on: ubuntu-latest
     outputs:
@@ -87,19 +121,19 @@ jobs:
             exit 1
           fi
       - name: Собрать APK из исходников
-        run: ./android/gradlew -p android :app:assembleRelayDebug
+        run: ./android/gradlew -p android :app:assembleRelayRelease :app:lintRelayRelease
       - name: Проверить сертификат пользовательской сборки
         if: env.KEYSTORE_BASE64 != ''
         env:
           EXPECTED_CERT: ${{ needs.metadata.outputs.androidCert }}
         shell: bash
         run: |
-          actual=$("$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs android/app/build/outputs/apk/relay/debug/app-relay-debug.apk | sed -n 's/Signer #1 certificate SHA-256 digest: //p')
+          actual=$("$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs android/app/build/outputs/apk/relay/release/app-relay-release.apk | sed -n 's/Signer #1 certificate SHA-256 digest: //p')
           test "$actual" = "$EXPECTED_CERT"
       - name: Подготовить файл
         run: |
           mkdir -p dist
-          cp android/app/build/outputs/apk/relay/debug/app-relay-debug.apk dist/RemoteVibecode-${{ needs.metadata.outputs.android }}.apk
+          cp android/app/build/outputs/apk/relay/release/app-relay-release.apk dist/RemoteVibecode-${{ needs.metadata.outputs.android }}.apk
       - uses: actions/upload-artifact@v4
         with:
           name: android-build
@@ -108,6 +142,33 @@ jobs:
       - name: Удалить временный ключ
         if: always()
         run: rm -f "$RUNNER_TEMP/android.keystore"
+
+  android-device:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v4
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Разрешить KVM для тестового эмулятора
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          disable-animations: true
+          script: ./android/gradlew -p android -PtaskFixture=true connectedRelayDebugAndroidTest
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-test-report
+          path: android/app/build/reports/androidTests/
 
   arch:
     needs: metadata
@@ -139,6 +200,10 @@ jobs:
         with:
           python-version: '3.13'
       - run: python -m pip install -r agent/requirements-build.txt
+      - name: Проверить интерфейс Windows
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest discover -s tests -p test_agent_qt.py -v
       - name: Собрать EXE
         run: >-
           python -m PyInstaller --onefile --windowed --clean --noconfirm
@@ -166,7 +231,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/bundle-v')
-    needs: [checks, metadata, android, arch, windows, relay]
+    needs: [checks, metadata, android, android-device, linux-package-validation, arch, windows, relay]
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -37,8 +37,8 @@ async def write_message(writer: asyncio.StreamWriter, value: dict) -> None:
 async def close(writer: asyncio.StreamWriter) -> None:
     writer.close()
     try:
-        await writer.wait_closed()
-    except (ConnectionError, OSError):
+        await asyncio.wait_for(writer.wait_closed(), 3)
+    except (ConnectionError, OSError, asyncio.TimeoutError):
         pass
 
 
@@ -49,8 +49,11 @@ class Pending:
 
 
 class Relay:
-    def __init__(self, secret: bytes):
+    def __init__(self, secret: bytes, idle_timeout: float = 45, connection_timeout: float = 600):
         self.secret = secret
+        self.idle_timeout = idle_timeout
+        self.connection_timeout = connection_timeout
+        self.peers: dict[str, int] = {}
         self.agent: asyncio.StreamWriter | None = None
         self.pending: dict[str, Pending] = {}
         self.lock = asyncio.Lock()
@@ -106,27 +109,39 @@ class Relay:
     async def handle_phone(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         connection_id = secrets.token_hex(16)
         pending = Pending()
+        peer = str(writer.get_extra_info("peername", ("unknown",))[0])
+        admitted = False
+        tasks = []
         try:
             async with self.lock:
-                if self.agent is None or len(self.pending) >= 128:
+                if self.agent is None or len(self.pending) >= 128 or self.peers.get(peer, 0) >= 16:
                     return
                 self.pending[connection_id] = pending
-                await write_message(self.agent, {"connect": connection_id})
+                self.peers[peer] = self.peers.get(peer, 0) + 1
+                admitted = True
+                await asyncio.wait_for(write_message(self.agent, {"connect": connection_id}), 5)
             data_reader, data_writer = await asyncio.wait_for(pending.channel, 15)
             async def pipe(source: asyncio.StreamReader, target: asyncio.StreamWriter) -> None:
-                while chunk := await source.read(65536):
+                while chunk := await asyncio.wait_for(source.read(65536), self.idle_timeout):
                     target.write(chunk)
-                    await target.drain()
+                    await asyncio.wait_for(target.drain(), self.idle_timeout)
             tasks = [asyncio.create_task(pipe(reader, data_writer)),
                      asyncio.create_task(pipe(data_reader, writer))]
-            done, remaining = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            done, remaining = await asyncio.wait(tasks, timeout=self.connection_timeout,
+                                                 return_when=asyncio.FIRST_COMPLETED)
             for task in remaining:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
         except (ConnectionError, OSError, asyncio.TimeoutError):
             pass
         finally:
+            for task in tasks:
+                if not task.done(): task.cancel()
+            if tasks: await asyncio.gather(*tasks, return_exceptions=True)
             self.pending.pop(connection_id, None)
+            if admitted:
+                self.peers[peer] -= 1
+                if not self.peers[peer]: self.peers.pop(peer, None)
             pending.finished.set()
             if pending.channel.done() and not pending.channel.cancelled():
                 try:

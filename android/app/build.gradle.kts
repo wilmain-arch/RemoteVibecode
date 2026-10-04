@@ -13,8 +13,8 @@ android {
         minSdk = 26
         targetSdk = 35
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        versionCode = 46
-        versionName = "0.13.4"
+        versionCode = 48
+        versionName = "1.0.0"
     }
 
     // Isolated package for device tests with synthetic credentials and notification settings.
@@ -32,6 +32,15 @@ android {
             }
         }
     }
+
+    buildTypes.getByName("release") {
+        isDebuggable = false
+        isMinifyEnabled = false
+        // Preserve the existing user's signing identity when switching from debug to release.
+        signingConfig = signingConfigs.getByName("debug")
+    }
+    lint { abortOnError = true }
+    adbOptions { installOptions.add("-g") }
 
     flavorDimensions += "connection"
     productFlavors {

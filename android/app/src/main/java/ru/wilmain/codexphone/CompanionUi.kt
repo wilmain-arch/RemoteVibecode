@@ -260,7 +260,17 @@ internal fun CompanionUi(
     workspaceNextCursor: String = "",
     onWorkspaceQuery: ((String, String, Boolean, Boolean, String) -> Unit)? = null,
     compatibilityNote: String = "",
+    workspaceThreadId: String = selectedThreadId,
+    onResolveContextFile: suspend (String, String) -> String? = { reference, _ -> onResolveProjectFile(reference) },
 ) {
+    var dismissUnknown by remember { mutableStateOf<LocalMessage?>(null) }
+    dismissUnknown?.let { message ->
+        AlertDialog(onDismissRequest = { dismissUnknown = null },
+            title = { Text("Скрыть уведомление?") },
+            text = { Text("Desktop не подтвердил доставку или отмену. Это действие уберёт только уведомление телефона; задача на ПК может продолжаться. Повторная отправка с прежним ID запрещена.") },
+            confirmButton = { TextButton(onClick = { onCancelQueued(message); dismissUnknown = null }) { Text("Скрыть уведомление") } },
+            dismissButton = { TextButton(onClick = { dismissUnknown = null }) { Text("Назад") } })
+    }
     var controlsOpen by rememberSaveable(selectedThreadId) { mutableStateOf(false) }
     var controlsTurn by rememberSaveable(selectedThreadId) { mutableStateOf("") }
     var focusTurn by rememberSaveable(selectedThreadId) { mutableStateOf("") }
@@ -373,7 +383,10 @@ internal fun CompanionUi(
             onClose = { controlsOpen = false },
             onSelect = { controlsOpen = false; onSelectThread(it) },
             onJump = { focusTurn = it; onJumpHistory(it) },
-            onChanged = { onRefreshCatalog(); onRetryHistory() }, compatibilityNote=compatibilityNote)
+            onChanged = { onRefreshCatalog(); onRetryHistory() }, compatibilityNote=compatibilityNote,
+            onProjectFile = { reference -> scope.launch { onResolveProjectFile(reference)?.let { folder ->
+                onBrowseWorkspace(folder); controlsOpen = false; filesOpen = true
+            } } })
         return
     }
     if (changesOpen && paired) {
@@ -390,12 +403,17 @@ internal fun CompanionUi(
                 onResolveProjectFile(reference)?.let { folder ->
                     onBrowseWorkspace(folder); subagentsOpen = false; filesOpen = true
                 }
-            } }, onSaveImage = onSaveChatImage, saveStatus = status)
+            } }, onSaveImage = onSaveChatImage, saveStatus = status,
+            onContextFile = { reference, source -> scope.launch {
+                onResolveContextFile(reference, source)?.let { folder ->
+                    onBrowseWorkspace(folder); subagentsOpen = false; filesOpen = true
+                }
+            } })
         return
     }
     if (filesOpen && paired) {
         WorkspaceFilesScreen(
-            projectName = projectName, rootName = workspaceRoot, threadId = selectedThreadId,
+            projectName = projectName, rootName = workspaceRoot, threadId = workspaceThreadId,
             path = workspacePath, entries = workspaceEntries,
             loading = workspaceLoading, error = workspaceError, truncated = workspaceTruncated,
             previewPath = previewPath, previewText = previewText, previewNote = previewNote,
@@ -413,7 +431,7 @@ internal fun CompanionUi(
             onSaveWorkspace = onSaveWorkspace, onSaveOutbox = onSaveFile,
             onFetchOutbox = onFetchFiles, onAttach = onAttach, saveStatus = status,
             onProjectFile = { reference -> scope.launch {
-                onResolveProjectFile(reference)?.let { folder -> onPreviewWorkspace(""); onBrowseWorkspace(folder) }
+                onResolveContextFile(reference, workspaceThreadId)?.let { folder -> onPreviewWorkspace(""); onBrowseWorkspace(folder) }
             } },
         )
         return
@@ -808,12 +826,12 @@ internal fun CompanionUi(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     if (item.nativeSubmissionId.isNotBlank() && item.deliveredTurnId.isBlank()) Text("Корректировка этой очереди недоступна в Desktop", style = MaterialTheme.typography.labelSmall)
                                     Row {
-                                        if (item.acceptedByBridge && !item.cancelRequested && item.deliveredTurnId.isBlank() && item.nativeSubmissionId.isBlank())
+                                        if (item.acceptedByBridge && !item.cancelRequested && item.deliveredTurnId.isBlank() && item.nativeSubmissionId.isBlank() && item.queueState != "checking")
                                             TextButton(onClick = { onSteerQueued(item) }) {
                                                 Text("Корректировать сейчас")
                                             }
-                                        if (item.deliveredTurnId.isBlank()) TextButton(onClick = { onCancelQueued(item) }, enabled = !item.cancelRequested && item.queueState != "checking") {
-                                            Text("Отменить")
+                                        if (item.deliveredTurnId.isBlank()) TextButton(onClick = { if (item.queueState == "checking") dismissUnknown = item else onCancelQueued(item) }, enabled = !item.cancelRequested) {
+                                            Text(if (item.queueState == "checking") "Скрыть уведомление" else "Отменить")
                                         }
                                     }
                                 }

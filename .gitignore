@@ -19,3 +19,6 @@ codex-phone-companion.service
 
 releases/*.apk
 releases/*.pkg.tar.zst
+
+# Local packaging output
+/build/

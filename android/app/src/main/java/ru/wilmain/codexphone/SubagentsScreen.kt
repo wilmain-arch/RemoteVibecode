@@ -47,7 +47,8 @@ private fun agentStatus(status: String) = when (status) {
 @Composable
 internal fun SubagentsScreen(threadId: String, onClose: () -> Unit,
     request: suspend (String, JSONObject?) -> JSONObject, loadImage: suspend (String) -> ByteArray,
-    onProjectFile: (String) -> Unit, onSaveImage: (ChatImage) -> Unit, saveStatus: String = "") {
+    onProjectFile: (String) -> Unit, onSaveImage: (ChatImage) -> Unit, saveStatus: String = "",
+    onContextFile: (String, String) -> Unit = { reference, _ -> onProjectFile(reference) }) {
     var openedImage by rememberSaveable(stateSaver = ChatImageSaver) { mutableStateOf<ChatImage?>(null) }
     val scope = rememberCoroutineScope()
     var agents by remember(threadId) { mutableStateOf(emptyList<Subagent>()) }
@@ -139,7 +140,7 @@ internal fun SubagentsScreen(threadId: String, onClose: () -> Unit,
     }
     var changesOpen by rememberSaveable(selectedId) { mutableStateOf(false) }
     if (changesOpen && selectedId != null) {
-        ChangesScreen(selectedId.orEmpty(), request, { changesOpen = false }, onProjectFile)
+        ChangesScreen(selectedId.orEmpty(), request, { changesOpen = false }) { onContextFile(it, selectedId.orEmpty()) }
         return
     }
     Scaffold(containerColor = MaterialTheme.colorScheme.background,
@@ -266,7 +267,7 @@ internal fun SubagentsScreen(threadId: String, onClose: () -> Unit,
                             Text(when(role) { "user" -> "Задача / уточнение"; "process" -> "Ход работы"
                                 "system" -> "Событие"; "outcome" -> "Итог работы"; else -> selected?.name ?: "Агент" },
                                 style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            SelectionContainer { MarkdownContent(row.optString("text"), compact = role == "system" || role == "process", onProjectFile = onProjectFile) }
+                            SelectionContainer { MarkdownContent(row.optString("text"), compact = role == "system" || role == "process", onProjectFile = { onContextFile(it, selectedId.orEmpty()) }) }
                             val activities = row.optJSONArray("activities")
                             for (index in 0 until (activities?.length() ?: 0)) {
                                 Text(activities?.optJSONObject(index)?.optString("label").orEmpty(),

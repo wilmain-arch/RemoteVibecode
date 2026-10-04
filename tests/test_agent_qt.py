@@ -40,6 +40,17 @@ class QtAgentTests(unittest.TestCase):
         self.app.processEvents()
         self.directory.cleanup()
 
+    def test_failed_start_and_late_health_do_not_fake_readiness(self):
+        controller = self.window.controller
+        controller.started = controller.bridge_ready = controller.codex_ready = True
+        generation = controller.health_generation
+        controller.consume(("stopped",))
+        self.assertFalse(controller.started)
+        controller.consume(("health", {"codexReady": True}, generation))
+        self.assertFalse(controller.codex_ready)
+        controller.consume(("health", {"codexReady": True}, controller.health_generation))
+        self.assertFalse(controller.codex_ready)
+
     def test_all_pages_and_themes(self):
         for theme in ["light", "dark", "system"]:
             self.window.choose_theme(theme)

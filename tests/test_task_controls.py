@@ -64,7 +64,7 @@ class InteractionTests(unittest.TestCase):
         rpc._waiters_lock = threading.Lock(); waiter = queue.Queue(); rpc._waiters = {1: waiter}
         rpc._send = self.sent.append; rpc.interactions = self.inbox; rpc.on_event = Mock()
         rpc._read_loop()
-        self.assertTrue(waiter.empty()); self.assertEqual(len(self.inbox.list('root')), 1)
+        self.assertEqual(waiter.get_nowait()["error"]["code"], -32001); self.assertEqual(len(self.inbox.list('root')), 1)
 
 
 class TaskTests(unittest.TestCase):

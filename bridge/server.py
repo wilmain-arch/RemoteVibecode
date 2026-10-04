@@ -17,6 +17,7 @@ import queue
 import re
 import secrets
 import ssl
+import socket
 import subprocess
 import threading
 import time
@@ -63,6 +64,8 @@ class CodexRpc:
         if not executable:
             raise RuntimeError("Не найден исполняемый файл Codex Desktop или CLI")
         app_server_args = ["app-server", "--listen", "stdio://"] if sys.platform == "win32" else ["app-server", "--stdio"]
+        self.executable = executable
+        self.healthy = False
         self.proc = subprocess.Popen(
             [executable, *app_server_args],
             stdin=subprocess.PIPE,
@@ -80,16 +83,16 @@ class CodexRpc:
         self.interactions = InteractionInbox(self._send)
         self.reader = threading.Thread(target=self._read_loop, daemon=True)
         self.reader.start()
-        result = self.call(
-            "initialize",
-            {
+        try:
+            self.call("initialize", {
                 "clientInfo": {"name": "codex-phone-companion", "version": "0.1.0"},
                 "capabilities": {"experimentalApi": True},
-            },
-        )
-        if "error" in result:
-            raise RuntimeError(result["error"].get("message", "Codex initialization failed"))
-        self.notify("initialized", {})
+            })
+            self.notify("initialized", {})
+            self.healthy = True
+        except BaseException:
+            self.close()
+            raise
 
     def _read_loop(self) -> None:
         assert self.proc.stdout is not None
@@ -109,7 +112,10 @@ class CodexRpc:
                 with self._waiters_lock:
                     waiter = self._waiters.get(request_id)
                 if waiter is not None:
-                    waiter.put(data)
+                    try:
+                        waiter.put_nowait(data)
+                    except queue.Full:
+                        pass
             elif data.get("method"):
                 if data["method"] == "serverRequest/resolved":
                     self.interactions.resolve((data.get("params") or {}).get("requestId"))
@@ -117,6 +123,14 @@ class CodexRpc:
                     self.on_event(data)
                 try:
                     self.events.put_nowait(data)
+                except queue.Full:
+                    pass
+        self.healthy = False
+        # EOF completes outstanding requests immediately instead of an opaque timeout.
+        with self._waiters_lock:
+            for waiter in self._waiters.values():
+                try:
+                    waiter.put_nowait({"error": {"message": "Codex app-server закрыл соединение", "code": -32001}})
                 except queue.Full:
                     pass
 
@@ -136,10 +150,15 @@ class CodexRpc:
             self._waiters[request_id] = waiter
         try:
             self._send({"method": method, "id": request_id, "params": params})
-            response = waiter.get(timeout=timeout)
+            try:
+                response = waiter.get(timeout=timeout)
+            except queue.Empty as exc:
+                self.healthy = False
+                raise TimeoutError("Codex не ответил вовремя: " + method) from exc
             if "error" in response:
                 error = response["error"]
                 raise RpcError(error.get("message", "Codex request failed"), error.get("code"))
+            self.healthy = True
             return response.get("result", {})
         finally:
             with self._waiters_lock:
@@ -156,6 +175,11 @@ class CodexRpc:
             except subprocess.TimeoutExpired:
                 self.proc.kill()
                 self.proc.wait(timeout=3)
+        if threading.current_thread() is not self.reader:
+            self.reader.join(timeout=2)
+        for stream in (self.proc.stdin, self.proc.stdout):
+            if stream is not None:
+                stream.close()
 
 
 class RpcError(RuntimeError):
@@ -192,12 +216,14 @@ class Bridge:
         self.rpc: CodexRpc | None = None
         self.rpc_lock = threading.RLock()
         self.rpc_last_used = 0.0
+        self.last_rpc_health = False
         self.active_turns: dict[str, str] = {}
         self.turn_lock = threading.Lock()
         self.event_condition = threading.Condition()
         self.event_instance = secrets.token_hex(8)
         self.event_count = 0
         self.send_lock = threading.Lock()
+        self.submission_lock = threading.Lock()
         self.update_until = 0.0
         self.upload_lock = threading.Lock()
         self.pending: dict[str, dict] = {
@@ -206,6 +232,7 @@ class Bridge:
             and Path(item["path"]).resolve().parent == self.upload_dir
         }
         self.sent_messages: dict[str, dict] = saved.get("sent_messages", {})
+        self.send_operations = saved.get("send_operations", {})
         self.queued_sends: dict[str, dict] = saved.get("queued_sends", {})
         self.thread_modes = saved.get("thread_modes", {})
         self.published_plans = saved.get("published_plans", {})
@@ -213,6 +240,7 @@ class Bridge:
         self.plan_boundaries = saved.get("plan_boundaries", {})
         self.controls = Controls(self)
         self.cancelled_sends: dict[str, float] = saved.get("cancelled_sends", {})
+        self.dismissed_sends = saved.get("dismissed_sends", {})
         self.last_queue_error = saved.get("last_queue_error", "")
         self.queue_lock = threading.Lock()
         self.chat_files: dict[tuple[str, str], Path] = {}
@@ -236,11 +264,13 @@ class Bridge:
             if self.rpc is None or self.rpc.proc.poll() is not None:
                 with self.turn_lock:
                     self.active_turns.clear()
+                self.last_rpc_health = False
                 self.rpc = CodexRpc(self._signal_event)
             rpc = self.rpc
             try:
                 yield rpc
             finally:
+                self.last_rpc_health = bool(getattr(rpc, "healthy", False))
                 self.rpc_last_used = time.monotonic()
 
     def _signal_event(self, event: dict | None = None) -> None:
@@ -377,6 +407,7 @@ class Bridge:
                     if self.rpc.interactions.has_pending():
                         self.rpc_last_used = time.monotonic()
                         continue
+                    self.last_rpc_health = bool(getattr(self.rpc, "healthy", False))
                     self.rpc.close()
                     self.rpc = None
 
@@ -856,9 +887,12 @@ class Bridge:
     def delete_thread(self, thread_id: str) -> dict:
         if not isinstance(thread_id, str) or not VALID_THREAD_ID.fullmatch(thread_id):
             raise ValueError("Некорректный ID чата")
-        with self.queue_lock:
-            if thread_id in self.active_turns or any(
-                    item.get("threadId") == thread_id for item in self.queued_sends.values()):
+        with self.send_lock:
+            with self.turn_lock:
+                active = thread_id in self.active_turns
+            with self.queue_lock:
+                queued = any(item.get("threadId") == thread_id for item in self.queued_sends.values())
+            if active or queued:
                 raise RuntimeError("Дождитесь завершения задачи и сообщений в очереди")
             if thread_id in self.draft_threads:
                 with self.state_lock:
@@ -867,6 +901,7 @@ class Bridge:
                 if not any(item["id"] == thread_id for item in self.list_threads(limit=500)):
                     raise ValueError("Чат не найден")
                 with self.rpc_session() as rpc:
+                    self.controls.idle(rpc, thread_id)
                     rpc.call("thread/delete", {"threadId": thread_id})
             remaining = self.list_threads(limit=500)
             with self.state_lock:
@@ -1001,8 +1036,17 @@ class Bridge:
         reference = re.sub(r":\d+(?::\d+)?$", "", reference)
         if reference.startswith("file://"):
             reference = reference[7:]
-        root, _ = self.workspace_path(thread_id)
+        thread_id = self._thread_id(thread_id)
         candidate = Path(reference)
+        with self.chat_images_lock:
+            key = next((key for (chat, key), file in self.chat_files.items()
+                        if chat == thread_id and (key == reference or file == candidate)), None)
+        if key is not None:
+            _, linked = self.workspace_path(thread_id, key)
+            if not linked.is_file():
+                raise ValueError("Файл по ссылке не найден")
+            return {"path": key, "folder": key.rsplit("/", 1)[0], "isDirectory": False, "absolutePath": str(linked)}
+        root, _ = self.workspace_path(thread_id)
         if candidate.is_absolute():
             try:
                 reference = str(candidate.relative_to(root))
@@ -1022,7 +1066,7 @@ class Bridge:
         relative = str(path.relative_to(root))
         return {"path": relative, "folder": relative if path.is_dir()
                 else ("" if path.parent == root else str(path.parent.relative_to(root))),
-                "isDirectory": path.is_dir()}
+                "isDirectory": path.is_dir(), "absolutePath": str(path)}
 
     def register_chat_files(self, thread_id: str, text: str) -> None:
         # Grant access only to individual files explicitly linked in this chat.
@@ -1104,12 +1148,14 @@ class Bridge:
                 "paired": self.paired,
                 "pending": self.pending,
                 "sent_messages": self.sent_messages,
+                "send_operations": getattr(self, "send_operations", {}),
                 "queued_sends": self.queued_sends,
                 "thread_modes": self.thread_modes,
                 "published_plans": self.published_plans,
                 "control_operations": self.control_operations,
                 "plan_boundaries": self.plan_boundaries,
                 "cancelled_sends": self.cancelled_sends,
+                "dismissed_sends": getattr(self, "dismissed_sends", {}),
                 "last_queue_error": self.last_queue_error,
             }
             temporary = self.state_file.with_name(self.state_file.name + ".tmp")
@@ -1123,22 +1169,56 @@ class Bridge:
             finally:
                 temporary.unlink(missing_ok=True)
 
+    def health(self, probe=False):
+        if probe:
+            with self.rpc_session() as rpc:
+                rpc.call("model/list", {"limit": 1}, timeout=8)
+        rpc = self.rpc
+        connected = bool(getattr(rpc, "healthy", False)) if rpc is not None else self.last_rpc_health
+        if rpc is not None and rpc.proc.poll() is not None:
+            connected = False
+        return {"bridgeReady": True, "codexReady": connected,
+                "codexState": "idle" if rpc is None and connected else "ready" if connected else "unverified"}
+
     def capabilities(self) -> dict:
+        now = time.monotonic()
+        cached = getattr(self, "capability_cache", None)
+        if cached and now - cached[0] < 60:
+            return cached[1]
         with self.rpc_session() as rpc:
-            try:
-                modes = rpc.call('collaborationMode/list', {}).get('data', [])
-            except RpcError:
-                modes = []
-        return {'protocolVersion': 1, 'agentVersion': '0.4.3',
-                'desktop': {'transport': 'bundled-app-server', 'modes': [m.get('mode') for m in modes]},
+            def probe(method, params):
+                try:
+                    return True, rpc.call(method, params, timeout=8)
+                except RpcError:
+                    return False, {}
+            modes_ok, modes_result = probe('collaborationMode/list', {})
+            modes = modes_result.get('data', [])
+            projects_ok, _ = probe('project/list', {'limit': 1})
+            tid = self.selected_thread_id
+            if tid in self.draft_threads:
+                _, threads = probe('thread/list', {'limit': 1})
+                tid = next((t.get('id') for t in threads.get('data', [])), None)
+            queue_ok = goal_ok = search_ok = False
+            if tid:
+                queue_ok, _ = probe('thread/queue/list', {'threadId': tid, 'limit': 1})
+                goal_ok, _ = probe('thread/goal/get', {'threadId': tid})
+                search_ok, _ = probe('thread/searchOccurrences', {'threadId': tid, 'searchTerm': 'RemoteVibecode-capability-probe', 'limit': 1})
+            executable = getattr(rpc, 'executable', '')
+        transport = 'bundled-app-server' if 'resources' in Path(executable).parts else 'cli-app-server'
+        result = {'protocolVersion': 1, 'agentVersion': '1.0.0',
+                'desktop': {'transport': transport, 'modes': [m.get('mode') for m in modes]},
                 'features': {'workspacePaging': True, 'workspaceSearch': True, 'workspaceVisibility': True,
-                    'controls': True, 'queueReconciliation': True, 'planCreate': any(m.get('mode') == 'plan' for m in modes),
+                    'controls': modes_ok and projects_ok and queue_ok and goal_ok and search_ok,
+                    'projects': projects_ok, 'historySearch': search_ok, 'goal': goal_ok,
+                    'queueReconciliation': queue_ok, 'planCreate': any(m.get('mode') == 'plan' for m in modes),
                     'nativeSteer': False},
                 'limitations': {'nativeSteer': 'Desktop не предоставляет подтверждённого атомарного переноса очереди в корректировку'}}
+        if tid: self.capability_cache = (now, result)
+        return result
 
     def reconcile_native_queue(self, tid, rpc, snapshot=None):
         with self.queue_lock:
-            if not any(m.get("threadId") == tid and m.get("nativeId") for m in self.queued_sends.values()):
+            if not any(m.get("threadId") == tid and (m.get("nativeId") or m.get("nativePending")) for m in self.queued_sends.values()):
                 return
         snapshot = snapshot or rpc.call('thread/queue/list', {'threadId': tid, 'limit': 100})
         entries = list(snapshot.get('data', []))
@@ -1157,14 +1237,19 @@ class Bridge:
         with self.queue_lock, self.state_lock:
             changed = False
             for mid, msg in list(self.queued_sends.items()):
-                if msg.get('threadId') != tid or not msg.get('nativeId'):
+                if msg.get('threadId') != tid or not (msg.get('nativeId') or msg.get('nativePending')):
                     continue
+                match = next((item for item in entries if item.get('clientUserMessageId') == mid), None)
+                if match and not msg.get('nativeId'):
+                    msg['nativeId'] = match['id']
+                    msg['nativePending'] = False
+                    changed = True
                 if mid in delivered:
                     changed = True
                     self.sent_messages[mid] = {'threadId': tid, 'turnId': delivered[mid], 'clientMessageId': mid}
                     self.queued_sends.pop(mid, None)
                     for fid in msg.get('files', []): self.pending.pop(fid, None)
-                elif msg['nativeId'] in native:
+                elif msg.get('nativeId') in native:
                     item = native[msg['nativeId']]
                     text = '\n'.join(i.get('text', '') for i in item.get('input', []) if i.get('type') == 'text')
                     changed |= msg.get('queueState') != 'queued' or msg.get('text') != text
@@ -1438,21 +1523,35 @@ class Bridge:
         start = max(0, end - limit)
         page = turns[start:end]
         return {"threadId": thread_id, "turns": page, "hasMore": start > 0,
+                "existingTurnIds": [t.get("id") for t in thread.get("turns", [])],
+                "existingMessageIds": [item["id"] for item in turns],
                 "nextBefore": page[0]["id"] if page and start > 0 else None}
 
     def upload(self, original_name: str, content_type: str, stream, length: int,
                expected_sha256: str = "", client_upload_id: str = "") -> dict:
+        if length < 0 or length > MAX_UPLOAD_BYTES:
+            raise ValueError("Файл превышает ограничение 40 МБ")
         if client_upload_id and not re.fullmatch(r"[0-9a-f]{32}", client_upload_id):
             raise ValueError("Некорректный ID загрузки")
+        if expected_sha256 and not re.fullmatch(r"[0-9a-fA-F]{64}", expected_sha256):
+            raise ValueError("Некорректная контрольная сумма файла")
         with self.upload_lock:
-            if client_upload_id:
-                with self.state_lock:
-                    existing = self.pending.get(client_upload_id)
-                    if existing is not None:
-                        if (existing.get("size") != length or
-                            expected_sha256 and existing.get("sha256") != expected_sha256.lower()):
-                            raise ValueError("ID загрузки уже занят другим файлом")
-                        return existing
+            with self.state_lock:
+                existing = self.pending.get(client_upload_id) if client_upload_id else None
+            if existing is not None:
+                if existing.get("size") != length or (expected_sha256 and existing.get("sha256") != expected_sha256.lower()):
+                    raise ValueError("ID загрузки уже занят другим файлом")
+                digest = hashlib.sha256()
+                remaining = length
+                while remaining:
+                    chunk = stream.read(min(64 * 1024, remaining))
+                    if not chunk:
+                        raise ValueError("Передача оборвалась до конца файла")
+                    digest.update(chunk)
+                    remaining -= len(chunk)
+                if not hmac.compare_digest(digest.hexdigest(), existing["sha256"]):
+                    raise ValueError("Контрольная сумма файла не совпала")
+                return existing
             return self._upload_once(original_name, content_type, stream, length,
                                      expected_sha256, client_upload_id)
 
@@ -1495,6 +1594,25 @@ class Bridge:
             self._save_state()
         return item
 
+    def _finish_send(self, response, file_ids, draft_id=None):
+        thread_id = response["threadId"]
+        mid = response["clientMessageId"]
+        with self.state_lock:
+            if draft_id:
+                self.draft_threads.pop(draft_id, None)
+                if draft_id in self.project_overrides:
+                    self.project_overrides[thread_id] = self.project_overrides.pop(draft_id)
+                if self.selected_thread_id == draft_id:
+                    self.selected_thread_id = thread_id
+            for file_id in file_ids:
+                self.pending.pop(file_id, None)
+            self.sent_messages[mid] = response
+            getattr(self, "send_operations", {}).pop(mid, None)
+            while len(self.sent_messages) > 512:
+                self.sent_messages.pop(next(iter(self.sent_messages)))
+            self._save_state()
+        return response
+
     def send(self, text: str, file_ids: list[str], client_message_id: str,
              thread_id: str | None = None, model: str | None = None,
              effort: str | None = None, collaboration_mode: str | None = None,
@@ -1503,12 +1621,26 @@ class Bridge:
         with self.send_lock:
             if time.monotonic() < self.update_until:
                 raise ValueError("Агент устанавливает обновление. Повторите отправку после подключения.")
+            if client_message_id in getattr(self, "dismissed_sends", {}):
+                raise ValueError("Исход сообщения скрыт локально. Повторный запуск с этим ID запрещён")
             if client_message_id in self.cancelled_sends:
                 raise ValueError("Сообщение отменено")
             if client_message_id in self.sent_messages:
                 return self.sent_messages[client_message_id]
+            fingerprint = hashlib.sha256(json.dumps({"text": text, "files": file_ids,
+                "threadId": thread_id, "model": model, "effort": effort,
+                "mode": collaboration_mode}, sort_keys=True).encode()).hexdigest()
+            if not hasattr(self, "send_operations"):
+                self.send_operations = {}
+            operation = self.send_operations.get(client_message_id)
+            if operation and operation["fingerprint"] != fingerprint:
+                raise ValueError("ID сообщения уже использован для другого запроса")
+            if operation and operation.get("threadId"):
+                thread_id = operation["threadId"]
+            if operation and operation.get("stage") == "thread-starting" and not operation.get("threadId"):
+                raise RuntimeError("Создание чата имеет неизвестный исход. Проверьте Desktop; запрос не запущен повторно")
             with self.turn_lock:
-                if thread_id in self.active_turns:
+                if thread_id in self.active_turns and not operation:
                     raise BusyError("Задача выполняется")
             with self.state_lock:
                 missing = [file_id for file_id in file_ids if file_id not in self.pending]
@@ -1533,8 +1665,15 @@ class Bridge:
                 if effort and (chosen is None or effort not in chosen["efforts"]):
                     raise ValueError("Усилие недоступно для этой модели")
             with self.rpc_session() as rpc:
-                draft_id = thread_id if thread_id in self.draft_threads else None
-                if draft_id:
+                draft_id = (operation or {}).get("draftId") or (thread_id if thread_id in self.draft_threads else None)
+                if operation is None:
+                    operation = {"fingerprint": fingerprint, "draftId": draft_id, "stage": "prepared"}
+                    with self.state_lock:
+                        if len(self.send_operations) >= 100:
+                            raise ValueError("Слишком много неподтверждённых отправок. Проверьте их исход в Desktop")
+                        self.send_operations[client_message_id] = operation
+                        self._save_state()
+                if draft_id and not operation.get("threadId"):
                     cwd = self.draft_threads[draft_id]
                     start_params = {"serviceName": "codex_phone_companion"}
                     if cwd:
@@ -1542,20 +1681,31 @@ class Bridge:
                     draft_project = self.project_overrides.get(draft_id)
                     if draft_project:
                         start_params["projectId"] = draft_project
-                    created = rpc.call("thread/start", start_params)
+                    with self.state_lock:
+                        operation["stage"] = "thread-starting"
+                        self._save_state()
+                    try:
+                        created = rpc.call("thread/start", start_params)
+                    except RpcError:
+                        with self.state_lock:
+                            self.send_operations.pop(client_message_id, None)
+                            self._save_state()
+                        raise
                     thread_id = created.get("thread", {}).get("id")
                     if not thread_id:
                         raise RuntimeError("Codex не создал чат")
+                    with self.state_lock:
+                        operation.update(threadId=thread_id, stage="prepared")
+                        self._save_state()
                 else:
                     existing = rpc.call("thread/read", {"threadId": thread_id, "includeTurns": True}).get("thread", {})
                     delivered = next((t for t in existing.get("turns", []) if any(
                         i.get("type") == "userMessage" and i.get("clientId") == client_message_id for i in t.get("items", []))), None)
                     if delivered:
                         response = {"threadId": thread_id, "turnId": delivered["id"], "clientMessageId": client_message_id}
-                        with self.state_lock:
-                            self.sent_messages[client_message_id] = response
-                            self._save_state()
-                        return response
+                        return self._finish_send(response, file_ids, draft_id)
+                    if operation.get("stage") == "turn-starting":
+                        raise RuntimeError("Исход отправки ещё не подтверждён Desktop. Проверяю историю; повторный запуск исключён")
                     if require_idle:
                         self.controls.idle(rpc, thread_id)
                     # Existing chats must be resumed before another client writes to them.
@@ -1602,8 +1752,14 @@ class Bridge:
                         usage_before = self.usage_limits()
                     except (RpcError, RuntimeError, OSError, queue.Empty):
                         usage_before = None
+                    with self.state_lock:
+                        operation.update(threadId=thread_id, stage="turn-starting")
+                        self._save_state()
                     result = rpc.call("turn/start", params)
                 except RpcError as exc:
+                    with self.state_lock:
+                        operation["stage"] = "prepared"  # Explicit rejection is safe to retry.
+                        self._save_state()
                     if any(marker in str(exc).lower() for marker in
                            ("active turn", "turn is active", "already active", "turn in progress")):
                         raise BusyError("Задача выполняется") from exc
@@ -1619,24 +1775,17 @@ class Bridge:
                         self.active_turns[thread_id] = turn_id
             response = {"turnId": (result.get("turn") or {}).get("id"),
                         "threadId": thread_id, "clientMessageId": client_message_id}
-            with self.state_lock:
-                if draft_id:
-                    self.draft_threads.pop(draft_id, None)
-                    if draft_id in self.project_overrides:
-                        self.project_overrides[thread_id] = self.project_overrides.pop(draft_id)
-                    if self.selected_thread_id == draft_id:
-                        self.selected_thread_id = thread_id
-                for file_id in file_ids:
-                    self.pending.pop(file_id, None)
-                self.sent_messages[client_message_id] = response
-                if len(self.sent_messages) > 512:
-                    self.sent_messages.pop(next(iter(self.sent_messages)))
-                self._save_state()
-            return response
+            return self._finish_send(response, file_ids, draft_id)
 
     def submit(self, text: str, file_ids: list[str], client_message_id: str,
                thread_id: str | None = None, model: str | None = None,
                effort: str | None = None) -> dict:
+        if not hasattr(self, "submission_lock"):
+            self.submission_lock = threading.Lock()
+        with self.submission_lock:
+            return Bridge._submit_locked(self, text, file_ids, client_message_id, thread_id, model, effort)
+
+    def _submit_locked(self, text, file_ids, client_message_id, thread_id, model, effort):
         thread_id = self._thread_id(thread_id)
         if client_message_id in self.sent_messages:
             return self.sent_messages[client_message_id]
@@ -1649,10 +1798,27 @@ class Bridge:
         try:
             return self.send(text, file_ids, client_message_id, thread_id, model, effort)
         except BusyError:
+            if not text.strip() and not file_ids:
+                raise ValueError("Добавь текст или файл")
+            with self.state_lock:
+                if any(file_id not in self.pending for file_id in file_ids):
+                    raise ValueError("Одно из вложений не найдено; передай файл заново")
             native_id = None
+            use_native = not model and not effort and not self.thread_modes.get(thread_id) and thread_id not in self.draft_threads
+            # Reserve/persist BEFORE queue/add. Unknown replies are reconciled, never re-added.
+            with self.queue_lock, self.state_lock:
+                if len(self.queued_sends) >= 50:
+                    raise ValueError("Очередь заполнена; дождись доставки предыдущих сообщений")
+                self.queued_sends[client_message_id] = {
+                    "text": text, "files": file_ids, "clientMessageId": client_message_id,
+                    "threadId": thread_id, "model": model, "effort": effort,
+                    "queuedAt": time.time(), "nativeId": None, "nativePending": use_native,
+                    "queueState": "checking" if use_native else "queued",
+                }
+                self._save_state()
             # Native queue has no per-message model/effort overrides. Preserve explicit overrides
             # in the bridge queue rather than silently changing their meaning.
-            if not model and not effort and not self.thread_modes.get(thread_id) and thread_id not in self.draft_threads:
+            if use_native:
                 with self.send_lock, self.rpc_session() as rpc:
                     thread = rpc.call("thread/read", {"threadId": thread_id, "includeTurns": True}).get("thread", {})
                     delivered = next((t for t in thread.get("turns", []) if any(
@@ -1663,6 +1829,9 @@ class Bridge:
                             self.sent_messages[client_message_id] = response
                             while len(self.sent_messages) > 512: self.sent_messages.pop(next(iter(self.sent_messages)))
                             for file_id in file_ids: self.pending.pop(file_id, None)
+                            self._save_state()
+                        with self.queue_lock, self.state_lock:
+                            self.queued_sends.pop(client_message_id, None)
                             self._save_state()
                         return response
                     existing = rpc.call("thread/queue/list", {"threadId": thread_id, "limit": 100}).get("data", [])
@@ -1680,7 +1849,13 @@ class Bridge:
                         if paths:
                             message += "\n\nПереданные файлы (прочитай по этим путям):\n" + "\n".join(f"- {a['name']}: {a['path']}" for a in paths)
                         if message.strip(): inputs.append({"type": "text", "text": message})
-                        result = rpc.call("thread/queue/add", {"threadId": thread_id, "input": inputs, "clientUserMessageId": client_message_id})
+                        try:
+                            result = rpc.call("thread/queue/add", {"threadId": thread_id, "input": inputs, "clientUserMessageId": client_message_id})
+                        except RpcError:
+                            with self.queue_lock, self.state_lock:
+                                self.queued_sends.pop(client_message_id, None)
+                                self._save_state()
+                            raise
                         native_id = result.get("queuedSubmission", {}).get("id")
                         if not native_id:
                             raise RuntimeError("Desktop не вернул идентификатор сообщения очереди")
@@ -1688,8 +1863,6 @@ class Bridge:
                 with self.state_lock:
                     if client_message_id in self.cancelled_sends:
                         raise ValueError("Сообщение отменено")
-                    if len(self.queued_sends) >= 50:
-                        raise ValueError("Очередь заполнена; дождись доставки предыдущих сообщений")
                     self.queued_sends[client_message_id] = {
                         "text": text,
                         "files": file_ids,
@@ -1699,10 +1872,30 @@ class Bridge:
                         "effort": effort,
                         "queuedAt": time.time(),
                         "nativeId": native_id,
+                        "nativePending": False,
+                        "queueState": "queued",
                     }
                     self.last_queue_error = ""
                     self._save_state()
             return {"queued": True, "threadId": thread_id, "clientMessageId": client_message_id, "nativeSubmissionId": native_id or ""}
+
+    def dismiss_unknown_message(self, mid, confirmed=False):
+        if not confirmed:
+            raise ValueError("Подтвердите скрытие: это не отменяет задачу в Desktop")
+        with self.send_lock, self.queue_lock, self.state_lock:
+            msg = self.queued_sends.get(mid)
+            if mid in self.sent_messages:
+                return {"status": "sent"}
+            if not hasattr(self, "dismissed_sends"):
+                self.dismissed_sends = {}
+            if mid in self.dismissed_sends:
+                return {"status": "dismissed"}
+            if not msg or msg.get("queueState") != "checking":
+                raise ValueError("Можно скрыть только сообщение с неизвестным исходом")
+            self.dismissed_sends[mid] = {"threadId": msg["threadId"], "at": time.time()}
+            self.queued_sends.pop(mid, None)
+            self._save_state()
+        return {"status": "dismissed", "note": "Скрыто на телефоне; выполнение или отмена Desktop не подтверждены"}
 
     def cancel_message(self, client_message_id: str) -> dict:
         with self.send_lock:
@@ -1837,7 +2030,7 @@ class Bridge:
             checked_native = set()
             for message_id, message in pending:
                 try:
-                    if message.get("nativeId"):
+                    if message.get("nativeId") or message.get("nativePending"):
                         if message["threadId"] in checked_native: continue
                         checked_native.add(message["threadId"])
                         with self.rpc_session() as rpc:
@@ -1888,6 +2081,25 @@ def main(argv: list[str] | None = None) -> None:
     class Handler(BaseHTTPRequestHandler):
         server_version = "CodexPhoneBridge/0.1"
 
+        def handle_one_request(self):
+            def expire():
+                try:
+                    self.connection.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+            self.header_deadline = threading.Timer(10, expire)
+            self.header_deadline.daemon = True
+            self.header_deadline.start()
+            try:
+                super().handle_one_request()
+            finally:
+                self.header_deadline.cancel()
+
+        def parse_request(self):
+            valid = super().parse_request()
+            self.header_deadline.cancel()
+            return valid
+
         def log_message(self, fmt, *values):
             print("bridge:", fmt % values, flush=True)
 
@@ -1908,7 +2120,16 @@ def main(argv: list[str] | None = None) -> None:
             length = int(self.headers.get("Content-Length", "-1"))
             if length < 0 or length > max_bytes:
                 raise ValueError("Слишком большой или отсутствующий JSON-запрос")
-            data = json.loads(self.rfile.read(length))
+            def expire_body():
+                try: self.connection.shutdown(socket.SHUT_RDWR)
+                except OSError: pass
+            deadline = threading.Timer(30, expire_body)
+            deadline.daemon = True
+            deadline.start()
+            try:
+                data = json.loads(self.rfile.read(length))
+            finally:
+                deadline.cancel()
             if not isinstance(data, dict):
                 raise ValueError("Ожидался JSON-объект")
             return data
@@ -1962,11 +2183,16 @@ def main(argv: list[str] | None = None) -> None:
                     data = self.read_json(4096)
                 except Exception:
                     self.send_json(400, {"error": "Некорректный JSON"}); return
-                if not hmac.compare_digest(str(data.get("pin", "")), bridge.pin):
-                    self.send_json(401, {"error": "Неверный код сопряжения"}); return
-                with bridge.state_lock:
-                    bridge.paired = True
-                    bridge._save_state()
+                with bridge.pin_lock:
+                    if bridge.paired:
+                        self.send_json(409, {"error": "Код сопряжения уже использован"}); return
+                    if time.monotonic() - pairing_started[0] > 1800:
+                        self.send_json(429, {"error": "Код сопряжения истёк"}); return
+                    if not hmac.compare_digest(str(data.get("pin", "")), bridge.pin):
+                        self.send_json(401, {"error": "Неверный код сопряжения"}); return
+                    with bridge.state_lock:
+                        bridge.paired = True
+                        bridge._save_state()
                 self.send_json(200, {"token": bridge.token, "threadId": bridge.selected_thread_id})
                 return
             if not self.authorized():
@@ -2041,7 +2267,8 @@ def main(argv: list[str] | None = None) -> None:
                     message_id = self.read_json(4096).get("clientMessageId")
                     if not isinstance(message_id, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", message_id):
                         raise ValueError("Некорректный ID сообщения")
-                    self.send_json(200, bridge.cancel_message(message_id))
+                    self.send_json(200, bridge.dismiss_unknown_message(message_id, data.get("confirmed") is True)
+                                   if data.get("dismissUnknown") else bridge.cancel_message(message_id))
                 except ValueError as exc:
                     self.send_json(400, {"error": str(exc)})
                 return
@@ -2166,6 +2393,16 @@ def main(argv: list[str] | None = None) -> None:
             self.send_json(404, {"error": "Не найдено"})
 
         def do_GET(self):
+            if urlparse(self.path).path == "/api/health":
+                if self.client_address[0] not in ("127.0.0.1", "::1") or not hmac.compare_digest(
+                        self.headers.get("Authorization", ""), "Bearer " + bridge.token):
+                    self.send_json(403, {"error": "Только локальный агент"}); return
+                try:
+                    probe = parse_qs(urlparse(self.path).query).get("probe", [""])[0] == "true"
+                    self.send_json(200, bridge.health(probe))
+                except Exception:
+                    self.send_json(503, {"bridgeReady": True, "codexReady": False, "codexState": "failed"})
+                return
             if not self.authorized():
                 self.send_json(401, {"error": "Требуется сопряжение"}); return
             parsed = urlparse(self.path)
@@ -2281,7 +2518,24 @@ def main(argv: list[str] | None = None) -> None:
     class Server(ThreadingHTTPServer):
         daemon_threads = True
         allow_reuse_address = True
-        request_queue_size = 128
+        request_queue_size = 32
+        workers = threading.BoundedSemaphore(32)
+
+        def process_request(self, request, client_address):
+            if not self.workers.acquire(blocking=False):
+                self.shutdown_request(request)
+                return
+            try:
+                super().process_request(request, client_address)
+            except BaseException:
+                self.workers.release()
+                raise
+
+        def process_request_thread(self, request, client_address):
+            try:
+                super().process_request_thread(request, client_address)
+            finally:
+                self.workers.release()
 
         def finish_request(self, request, client_address):
             # The socket must be accepted before a TLS handshake can block.
@@ -2289,7 +2543,7 @@ def main(argv: list[str] | None = None) -> None:
             request.settimeout(10)
             try:
                 with self.tls.wrap_socket(request, server_side=True) as secured:
-                    secured.settimeout(None)
+                    secured.settimeout(30)
                     Handler(secured, client_address, self)
             except (ssl.SSLError, TimeoutError, ConnectionResetError):
                 # A readiness probe or abandoned connection may not send TLS.
