@@ -17,6 +17,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.core.view.WindowCompat
 import androidx.compose.ui.window.DialogWindowProvider
 import androidx.compose.ui.graphics.luminance
@@ -54,6 +56,9 @@ internal fun CopyAction(text: String, description: String = "Копироват�
 @Composable
 internal fun ImageViewer(endpoint: String, name: String, loadImage: suspend (String) -> ByteArray,
     onClose: () -> Unit, onSave: () -> Unit, saveStatus: String = "") {
+    val keyboard = LocalSoftwareKeyboardController.current
+    val focus = LocalFocusManager.current
+    LaunchedEffect(endpoint) { focus.clearFocus(); keyboard?.hide() }
     var saveRequested by remember(endpoint) { mutableStateOf(false) }
     val relevantSaveStatus = saveStatus.takeIf {
         it.contains(name) || it.contains("сохран", ignoreCase = true) || it.contains("скачив", ignoreCase = true)

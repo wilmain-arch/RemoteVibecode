@@ -118,7 +118,7 @@ class Material3UiTest {
         }
         compose.onNode(hasSetTextAction()).performClick()
         compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("Корректировать сейчас"))
-        compose.onNodeWithText("Корректировать сейчас").assertIsDisplayed().performClick()
+        compose.onNodeWithText("Корректировать сейчас").performScrollTo().assertIsDisplayed().performClick()
         compose.runOnIdle { check(steered) }
         compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("Отменить"))
         compose.onNodeWithText("Отменить").performClick()
@@ -297,7 +297,7 @@ class Material3UiTest {
         compose.onNodeWithContentDescription("Проект").assertIsDisplayed()
         compose.onNodeWithContentDescription("Передача").assertIsDisplayed()
         compose.onNodeWithContentDescription("Очистить поиск").performClick()
-        compose.onNodeWithText("README.md").assertIsDisplayed()
+        compose.onNodeWithText("README.md").performScrollTo().assertIsDisplayed()
         screenshot("files-ime")
     }
     @Test fun advancedFilesSearchAndPaging() {
@@ -565,6 +565,7 @@ class Material3UiTest {
             pinch(center - androidx.compose.ui.geometry.Offset(80f, 0f), center + androidx.compose.ui.geometry.Offset(80f, 0f),
                 center - androidx.compose.ui.geometry.Offset(240f, 0f), center + androidx.compose.ui.geometry.Offset(240f, 0f))
         }
+        compose.waitUntil(5000) { runCatching { compose.onNodeWithText("Вернуть исходный размер").assertIsDisplayed() }.isSuccess }
         compose.onNodeWithText("Вернуть исходный размер").assertIsDisplayed()
         screenshot("focus-preview-pinch")
         compose.onNodeWithContentDescription("Скачать изображение").performClick()
