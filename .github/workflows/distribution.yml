@@ -163,14 +163,7 @@ jobs:
           api-level: 35
           arch: x86_64
           disable-animations: true
-          script: |
-            set +e
-            ./android/gradlew -p android -PtaskFixture=true connectedRelayDebugAndroidTest
-            result=$?
-            mkdir -p android/app/build/reports/androidTests/diagnostic
-            adb exec-out run-as ru.wilmain.codexphone.relay.taskfixture tar -cf - cache > android/app/build/reports/androidTests/diagnostic/synthetic-cache.tar
-            adb logcat -d -s RV-PREVIEW > android/app/build/reports/androidTests/diagnostic/preview.log
-            exit "$result"
+          script: ./scripts/run_android_device_tests.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
