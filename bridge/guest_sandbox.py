@@ -1,7 +1,7 @@
-"""Linux guest executor prototype: no host home, credentials, network or PIDs.
+"""Linux guest executor: no host home, credentials, network or PIDs.
 
-This module is not connected to task submission. A successful mount/protocol
-probe is necessary but insufficient to enable guest model execution.
+Used by the guest gateway and the capability probe. A successful probe alone
+does not prove provider availability or all model tools.
 """
 from __future__ import annotations
 

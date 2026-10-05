@@ -19,18 +19,22 @@ class GuestJobs:
                 CREATE TABLE IF NOT EXISTS guest_jobs(id TEXT PRIMARY KEY,guest TEXT NOT NULL REFERENCES guests(id),
                     payload TEXT NOT NULL,state TEXT NOT NULL,created REAL NOT NULL,thread TEXT,turn TEXT,
                     result TEXT NOT NULL DEFAULT '{}',reason TEXT NOT NULL DEFAULT '');
+                CREATE TABLE IF NOT EXISTS guest_cancellations(id TEXT PRIMARY KEY,guest TEXT NOT NULL REFERENCES guests(id));
                 CREATE TABLE IF NOT EXISTS guest_conversations(guest TEXT NOT NULL REFERENCES guests(id),
                     id TEXT NOT NULL,thread TEXT NOT NULL,PRIMARY KEY(guest,id));
             ''')
             columns={row[1] for row in access.db.execute('PRAGMA table_info(guest_jobs)')}
             if 'eligible' not in columns:
                 access.db.execute('ALTER TABLE guest_jobs ADD COLUMN eligible REAL NOT NULL DEFAULT 0')
+            for column in ('started','completed'):
+                if column not in columns:access.db.execute(f'ALTER TABLE guest_jobs ADD COLUMN {column} REAL')
 
     def defer(self,op,delay=30):
         self.update(op,'queued',reason='waiting_for_budget_or_meter')
         self.access._transaction(lambda:self.access.db.execute('UPDATE guest_jobs SET eligible=? WHERE id=?',(time.time()+delay,op)))
 
-    def enqueue(self,guest,data):
+    @staticmethod
+    def _request(data):
         op=data.get('operationId');text=data.get('text');conversation=data.get('conversationId','main')
         if not isinstance(op,str) or not ID.fullmatch(op):raise ValueError('Нужен стабильный operationId')
         if not isinstance(text,str) or not text.strip() or len(text)>100000:raise ValueError('Сообщение: от 1 до 100000 символов')
@@ -41,6 +45,20 @@ class GuestJobs:
         if model is not None and (not isinstance(model,str) or not re.fullmatch(r'[a-zA-Z0-9_.:/-]{1,100}',model)):raise ValueError('Некорректная модель')
         if effort is not None and effort not in ('none','minimal','low','medium','high','xhigh','max','ultra'):raise ValueError('Некорректное усилие')
         payload=json.dumps({'text':text,'conversationId':conversation,'scopeId':scope,'model':model,'effort':effort},sort_keys=True,ensure_ascii=False)
+        return op,payload
+
+    def replay(self,guest,data):
+        op,payload=self._request(data)
+        with self.access.lock:
+            self.access._guest(guest)
+            old=self.access.db.execute('SELECT guest,payload FROM guest_jobs WHERE id=?',(op,)).fetchone()
+            if old:
+                if old!=(guest,payload):raise AccessError('operationId уже используется другим запросом')
+                return self.get(guest,op)
+            return None
+
+    def enqueue(self,guest,data):
+        op,payload=self._request(data)
         def run():
             _,status=self.access._guest(guest)
             if status!='active':raise AccessError('Сначала примите приглашение')
@@ -48,18 +66,23 @@ class GuestJobs:
             if old:
                 if old!=(guest,payload):raise AccessError('operationId уже используется другим запросом')
                 return self.get(guest,op)
+            cancelled=self.access.db.execute('SELECT guest FROM guest_cancellations WHERE id=?',(op,)).fetchone()
+            if cancelled and cancelled[0]!=guest:raise AccessError('operationId уже используется другим запросом')
             count=self.access.db.execute("SELECT count(*) FROM guest_jobs WHERE guest=? AND state IN ('queued','dispatching','running','cancel_requested')",(guest,)).fetchone()[0]
-            if count>=20:raise ValueError('Очередь гостя заполнена')
+            if count>=20 and not cancelled:raise ValueError('Очередь гостя заполнена')
             self.access.db.execute('INSERT INTO guest_jobs(id,guest,payload,state,created) VALUES(?,?,?,\'queued\',?)',(op,guest,payload,time.time()))
+            if cancelled:
+                self.access.db.execute("UPDATE guest_jobs SET state='cancelled',reason='cancelled_by_guest',completed=? WHERE id=?",(time.time(),op))
+                self.access.db.execute('DELETE FROM guest_cancellations WHERE id=?',(op,))
             return self.get(guest,op)
         return self.access._transaction(run)
 
     def get(self,guest,op):
         with self.access.lock:
-            row=self.access.db.execute('SELECT id,guest,payload,state,thread,turn,result,reason FROM guest_jobs WHERE id=?',(op,)).fetchone()
+            row=self.access.db.execute('SELECT id,guest,payload,state,thread,turn,result,reason,created,started,completed FROM guest_jobs WHERE id=?',(op,)).fetchone()
             if not row or row[1]!=guest:raise AccessError('Задача недоступна')
             return {'operationId':row[0],**json.loads(row[2]),'state':row[3],'threadId':row[4],'turnId':row[5],
-                    'result':json.loads(row[6]),'reason':row[7]}
+                    'result':json.loads(row[6]),'reason':row[7],'created':row[8],'startedAt':row[9],'completedAt':row[10]}
 
     def list(self,guest,before=None):
         with self.access.lock:
@@ -94,6 +117,9 @@ class GuestJobs:
             if state in ('running','queued') and old[0] in ('cancelled','cancel_requested'):
                 state_value=old[0]
             else:state_value=state
+            if turn is not None:self.access.db.execute('UPDATE guest_jobs SET started=coalesce(started,?) WHERE id=?',(time.time(),op))
+            if state_value in ('completed','failed','cancelled','uncertain'):
+                self.access.db.execute('UPDATE guest_jobs SET completed=coalesce(completed,?) WHERE id=?',(time.time(),op))
             self.access.db.execute('UPDATE guest_jobs SET state=?,thread=coalesce(?,thread),turn=coalesce(?,turn),result=coalesce(?,result),reason=? WHERE id=?',
                 (state_value,thread,turn,None if result is None else json.dumps(result,ensure_ascii=False),reason[:200],op))
         return self.access._transaction(run)
@@ -102,9 +128,18 @@ class GuestJobs:
         return self.access._transaction(lambda: self._cancel_locked(guest,op))
 
     def _cancel_locked(self,guest,op):
+        self.access._guest(guest)
+        if not isinstance(op,str) or not ID.fullmatch(op):raise ValueError('Нужен стабильный operationId')
+        if not self.access.db.execute('SELECT 1 FROM guest_jobs WHERE id=?',(op,)).fetchone():
+            old=self.access.db.execute('SELECT guest FROM guest_cancellations WHERE id=?',(op,)).fetchone()
+            if old and old[0]!=guest:raise AccessError('Задача недоступна')
+            if not old and self.access.db.execute('SELECT count(*) FROM guest_cancellations WHERE guest=?',(guest,)).fetchone()[0]>=1000:
+                raise ValueError('Слишком много отменённых неподтверждённых запросов')
+            self.access.db.execute('INSERT OR IGNORE INTO guest_cancellations VALUES(?,?)',(op,guest))
+            return {'operationId':op,'state':'cancelled','reason':'cancelled_by_guest'}
         task=self.get(guest,op)
         if task['state']=='queued':
-            self.access.db.execute("UPDATE guest_jobs SET state='cancelled',reason='cancelled_by_guest' WHERE id=?",(op,))
+            self.access.db.execute("UPDATE guest_jobs SET state='cancelled',reason='cancelled_by_guest',completed=? WHERE id=?",(time.time(),op))
         elif task['state'] in ('dispatching','running'):
             self.access.db.execute("UPDATE guest_jobs SET state='cancel_requested',reason='cancelled_by_guest' WHERE id=?",(op,))
         return self.get(guest,op)
@@ -148,8 +183,12 @@ class GuestJobs:
                 raise ValueError('Дополнительный расход: от 0 до 100 процентных пунктов для каждого окна')
             values[key]=value
         def run():
-            task=self.access.db.execute('SELECT guest,state FROM guest_jobs WHERE id=?',(op,)).fetchone()
+            task=self.access.db.execute('SELECT guest,state,result FROM guest_jobs WHERE id=?',(op,)).fetchone()
             meter=self.access.db.execute('SELECT state FROM execution WHERE id=?',(op,)).fetchone()
+            previous=json.loads(task[2]) if task else {}
+            if task and task[1]=='failed' and previous.get('ownerResolved'):
+                if previous.get('additionalUsage')!=values:raise ValueError('Расход уже согласован с другими значениями')
+                return self.get(task[0],op)
             if not task or task[1]!='uncertain' or (meter and meter[0]!='uncertain'):
                 raise ValueError('Задача не ожидает согласования')
             for key,value in values.items():
@@ -160,7 +199,7 @@ class GuestJobs:
                 # Recovery may find a durable dispatch without a meter row.
                 # Explicit owner reconciliation releases it without replay.
                 self.access.db.execute("INSERT INTO execution VALUES(?,?,?,'completed',?)",(op,task[0],'{}',json.dumps({'ownerResolved':True,'additionalUsage':values})))
-            self.access.db.execute("UPDATE guest_jobs SET state='failed',reason='resolved_by_owner',result=? WHERE id=?",(json.dumps({'ownerResolved':True,'additionalUsage':values}),op))
+            self.access.db.execute("UPDATE guest_jobs SET state='failed',reason='resolved_by_owner',result=? WHERE id=?",(json.dumps({**previous,'ownerResolved':True,'additionalUsage':values}),op))
             return self.get(task[0],op)
         return self.access._transaction(run)
 

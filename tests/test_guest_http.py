@@ -56,11 +56,20 @@ class GuestHttpTests(unittest.TestCase):
                         call('guest/send',{'operationId':'task-fixture-001','text':'Synthetic'},token)
                     self.assertEqual(error.exception.code,code)
                     error.exception.close()
-                with self.assertRaises(urllib.error.HTTPError) as error:
-                    call('guest/cancel',{'operationId':'unknown-fixture'},guest_token)
-                self.assertEqual(error.exception.code,403)
-                error.exception.close()
-                for path in ('guests','status','history?threadId=fixture-root','events','projects','threads','models','limits',
+                from bridge.guest_access import GuestAccess
+                from bridge.guest_jobs import GuestJobs
+                access=GuestAccess(root/'guest-access.sqlite3')
+                try:
+                    jobs=GuestJobs(access)
+                    request={'operationId':'accepted-before-disable','text':'Synthetic accepted task'}
+                    jobs.enqueue(created['guestId'],request);jobs.update(request['operationId'],'completed')
+                    accepted=jobs.get(created['guestId'],request['operationId'])
+                finally:access.db.close()
+                self.assertEqual(call('guest/send',request,guest_token),accepted)
+                self.assertEqual(call('guest/cancel',{'operationId':'unknown-fixture'},guest_token)['state'],'cancelled')
+                with self.assertRaises(urllib.error.HTTPError) as error:call('guest/tasks?before=foreign-fixture',token=guest_token)
+                self.assertEqual(error.exception.code,400);error.exception.close()
+                for path in ('guests','guests/copies?guestId=fixture','status','history?threadId=fixture-root','events','projects','threads','models','limits',
                              'adb/devices','outbox','workspace?path=/','chat/image?id=fixture','download?id=fixture','control?section=search'):
                     with self.subTest(path=path):
                         with self.assertRaises(urllib.error.HTTPError) as error:call(path,token=guest_token)

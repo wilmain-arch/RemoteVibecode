@@ -48,8 +48,9 @@ class GuestScheduler:
                 return {'stop':bool(reason),'stopReason':reason,'measurement':measurement}
             # Cancellation can arrive between durable claim and launch.
             if self.jobs.get(task['guestId'],op)['state']=='cancel_requested':
-                self.access.finish(op,self.snapshot())
-                self.jobs.update(op,'cancelled')
+                measurement=self.access.finish(op,self.snapshot(),interference=not self.owner_idle())
+                self.jobs.update(op,'uncertain' if measurement['state']=='uncertain' else 'cancelled',
+                    result={'measurement':measurement},reason='meter_uncertain' if measurement['state']=='uncertain' else 'cancelled_by_guest')
                 return self.jobs.get(task['guestId'],op)
             self.jobs.update(op,'running')
             result=self.runner(task,checkpoint)

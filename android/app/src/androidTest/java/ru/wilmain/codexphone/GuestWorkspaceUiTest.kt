@@ -34,6 +34,41 @@ class GuestWorkspaceUiTest {
         compose.onNodeWithText("Общие файлы").assertExists()
         compose.onNodeWithText("Загрузить файл · до 4 МиБ").assertDoesNotExist()
     }
+    @Test fun sharedHistoryUsesNativeCursorAndLoadsEarlierMessages() {
+        val paths=mutableListOf<String>()
+        compose.setContent {MaterialTheme(colorScheme=lightPalette,typography=appTypography) {
+            GuestSharedScreen({}, {}) {path,_->
+                paths.add(path)
+                if(path=="guest/shared") JSONObject().put("resources",JSONArray().put(JSONObject().put("kind","thread").put("resourceId","fixture-thread").put("name","Общий чат").put("right","view")))
+                else if(path.contains("before=history-cursor"))JSONObject().put("turns",JSONArray().put(JSONObject().put("text","Раннее сообщение"))).put("nextBefore",JSONObject.NULL)
+                else JSONObject().put("turns",JSONArray().put(JSONObject().put("text","Последнее сообщение"))).put("nextBefore","history-cursor")
+            }
+        }}
+        compose.onNodeWithText("Просмотреть историю чата").performClick()
+        compose.onNodeWithText("Показать ранние сообщения").performScrollTo().performClick()
+        compose.waitUntil(5000){paths.any {it.contains("before=history-cursor")}}
+        compose.onNodeWithText("Раннее сообщение",substring=true).assertExists()
+        compose.onNodeWithText("Показать ранние сообщения").assertDoesNotExist()
+    }
+
+    @Test fun failedPreviewCanBeRetriedWithoutLosingSelectedFile() {
+        var attempts=0
+        compose.setContent {MaterialTheme(colorScheme=lightPalette,typography=appTypography) {
+            GuestWorkspaceScreen("default",{},initialPath="demo.txt",onRequest={path,_->
+                if(path.contains("blob=true")) {
+                    attempts++
+                    if(attempts==1)error("Синтетическая ошибка файла")
+                    JSONObject().put("name","demo.txt").put("mime","text/plain").put("dataBase64","c3ludGhldGlj")
+                } else {kotlinx.coroutines.delay(100);JSONObject().put("entries",JSONArray())}
+            })
+        }}
+        compose.waitUntil(5000){compose.onAllNodesWithText("Повторить открытие файла").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithText("Повторить открытие файла").performScrollTo().performClick()
+        compose.onNodeWithText("synthetic").assertExists()
+        compose.onNodeWithText("Скачать файл").performScrollTo().assertExists()
+        org.junit.Assert.assertEquals(2,attempts)
+    }
+
     @Test fun selectedImageRestoresAndHasDownloadAndZoomActions() {
         val output=ByteArrayOutputStream()
         val bitmap=Bitmap.createBitmap(8,8,Bitmap.Config.ARGB_8888)

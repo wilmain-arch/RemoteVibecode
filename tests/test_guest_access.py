@@ -63,6 +63,15 @@ class GuestsTest(unittest.TestCase):
         with self.assertRaises(AccessError): self.store.authenticate(token)
         with self.assertRaises(AccessError): self.store.redeem(data['secret'],'device-001',token)
 
+    def test_consumed_invite_retry_after_expiry_only_same_valid_session(self):
+        data,_=self.invite();token=secrets.token_urlsafe(32)
+        first=self.store.redeem(data['secret'],'device-fixture',token)
+        self.store.db.execute('UPDATE invitations SET expires=0')
+        self.assertEqual(first,self.store.redeem(data['secret'],'device-fixture',token))
+        with self.assertRaises(AccessError):self.store.redeem(data['secret'],'other-device',token)
+        self.store.db.execute('UPDATE sessions SET expires=0')
+        with self.assertRaises(AccessError):self.store.redeem(data['secret'],'device-fixture',token)
+
     def test_invite_consumed_once_concurrently(self):
         data,_=self.invite()
         def redeem(n):
@@ -121,6 +130,15 @@ class GuestsTest(unittest.TestCase):
         self.assertEqual(self.store.view(guest)['quotas']['week']['spent'],5)
         self.action(guest,'reallocate',quotas={'week':rule(amount=20)})
         self.assertEqual(self.store.view(guest)['quotas']['week']['spent'],0)
+
+    def test_reallocation_during_measurement_preserves_budget(self):
+        _,created=self.invite();guest=created['guestId']
+        self.store.begin(guest,'active-reallocation',sample())
+        self.store.checkpoint('active-reallocation',sample(week=58))
+        with self.assertRaises(ValueError):self.action(guest,'reallocate',quotas={'week':rule(amount=20)})
+        self.assertEqual(self.store.view(guest)['quotas']['week']['spent'],2)
+        self.store.checkpoint('active-reallocation',sample(),interference=True)
+        with self.assertRaises(ValueError):self.action(guest,'reallocate',quotas={'week':rule(amount=20)})
 
     def test_lane_and_external_activity_blocked(self):
         _,first=self.invite()

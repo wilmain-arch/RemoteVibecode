@@ -2243,6 +2243,9 @@ def main(argv: list[str] | None = None) -> None:
                     guest = self.guest_identity()
                     data = self.read_json(131072)
                     if route.endswith("/send"):
+                        replay=bridge.guest_jobs.replay(guest,data)
+                        if replay is not None:
+                            self.send_json(200,replay);return
                         if bridge.guest_runtime is None or not bridge.guest_runtime.enabled:
                             self.send_json(503, {"error": "Гостевой исполнитель ещё не подключён", "code": "guest_execution_unavailable"})
                             return
@@ -2659,6 +2662,16 @@ def main(argv: list[str] | None = None) -> None:
                 except ValueError as exc:self.send_json(400, {"error": str(exc)})
                 except Exception:self.send_json(503, {"error": "Ресурс временно недоступен"})
                 return
+            if route == "/api/guests/copies":
+                if not self.authorized():
+                    self.send_json(403,{"error":"Только владелец просматривает копии"});return
+                try:
+                    query=parse_qs(urlparse(self.path).query)
+                    self.send_json(200,bridge.guest_resources.owner_copies(query.get("guestId",[""])[0],query.get("before",[None])[0]))
+                except AccessError as exc:self.send_json(403,{"error":str(exc)})
+                except ValueError as exc:self.send_json(400,{"error":str(exc)})
+                except Exception:self.send_json(503,{"error":"Список копий временно недоступен"})
+                return
             if route == "/api/guests/tasks":
                 if not self.authorized():
                     self.send_json(403, {"error": "Только владелец просматривает общую очередь"}); return
@@ -2669,6 +2682,8 @@ def main(argv: list[str] | None = None) -> None:
                     self.send_json(200, bridge.guest_jobs.list(guest,parse_qs(urlparse(self.path).query).get("before",[None])[0]))
                 except AccessError as exc:
                     self.send_json(401, {"error": str(exc)})
+                except ValueError as exc:
+                    self.send_json(400, {"error": str(exc)})
                 except Exception:
                     self.send_json(503, {"error": "Гостевая очередь временно недоступна"})
                 return
@@ -2692,6 +2707,7 @@ def main(argv: list[str] | None = None) -> None:
                 if not self.authorized():
                     self.send_json(403, {"error": "Только владелец управляет гостями"}); return
                 result = bridge.guests.list()
+                result["copiesListingAvailable"]=True
                 guests=[]
                 for item in result["guests"]:
                     try:guests.append({**item,**bridge.guest_display(item["id"])})

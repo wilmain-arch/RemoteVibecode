@@ -187,7 +187,7 @@ class GuestAccess:
         token_hash = self.digest(session_token)
         def run():
             row = self.db.execute('SELECT guest,expires,consumed FROM invitations WHERE digest=?',(digest,)).fetchone()
-            if not row or row[1] <= time.time():
+            if not row:
                 raise AccessError('Приглашение недействительно или истекло')
             self._guest(row[0])
             old = self.db.execute('SELECT guest,device,expires FROM sessions WHERE digest=?',(token_hash,)).fetchone()
@@ -195,6 +195,7 @@ class GuestAccess:
                 if not old or old[0]!=row[0] or old[1]!=device or old[2]<=time.time():
                     raise AccessError('Приглашение уже использовано')
             else:
+                if row[1]<=time.time():raise AccessError('Приглашение недействительно или истекло')
                 if old:
                     raise AccessError('Ключ сессии уже используется')
                 self.db.execute('INSERT INTO sessions VALUES(?,?,?,?)',(token_hash,row[0],device,time.time()+30*86400))
@@ -257,6 +258,8 @@ class GuestAccess:
             if action in ('configure','reallocate'):
                 if not rules:
                     raise ValueError('Выберите окно квоты')
+                if action=='reallocate' and self.db.execute("SELECT 1 FROM execution WHERE guest=? AND state IN ('active','uncertain') LIMIT 1",(guest,)).fetchone():
+                    raise ValueError('Сначала завершите задачу или согласуйте её расход, затем выделяйте квоту заново')
                 for key,rule in rules.items():
                     self._set_budget(guest,key,rule,snapshot,fresh=action=='reallocate')
             elif action=='grant':

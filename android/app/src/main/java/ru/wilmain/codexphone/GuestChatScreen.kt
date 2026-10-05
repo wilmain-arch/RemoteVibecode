@@ -33,16 +33,42 @@ internal fun guestTaskLabel(state:String)=when(state) {
     else->state
 }
 
+internal fun guestTaskOutcome(task:JSONObject):String {
+    val label=guestTaskLabel(task.optString("state"))
+    val started=task.optDouble("startedAt",0.0);val completed=task.optDouble("completedAt",0.0)
+    if(started<=0||completed<started)return label
+    val seconds=(completed-started).toLong().coerceAtLeast(0)
+    val duration=when {
+        seconds>=3600->"${seconds/3600} ч ${(seconds%3600)/60} мин"
+        seconds>=60->"${seconds/60} мин ${seconds%60} с"
+        else->"$seconds с"
+    }
+    return "$label · $duration"
+}
+
+// Acknowledgement belongs to the frozen outbox chat, never the selected chat.
+internal fun acknowledgeGuestDraft(storeJson:String,currentKey:String,currentDraft:String,request:JSONObject):Pair<String,String> {
+    val store=JSONObject(storeJson)
+    val drafts=store.getJSONObject("drafts")
+    drafts.put(currentKey,currentDraft)
+    val key=request.optString("scopeId","default")+"/"+request.optString("conversationId","main")
+    if(drafts.optString(key)==request.optString("text")) drafts.put(key,"")
+    return store.toString() to drafts.optString(currentKey)
+}
+
 @Composable
 internal fun GuestChatScreen(name:String, initialDraft:String, initialPending:String,
     onPersist:(String,String)->Unit, onClose:()->Unit, initialScope:String="default", onScope:(String)->Unit={}, onThemeChanged:()->Unit={}, onRequest:suspend(String,JSONObject?)->JSONObject) {
     val scope=rememberCoroutineScope()
     val context=androidx.compose.ui.platform.LocalContext.current
-        var draftStore by rememberSaveable {mutableStateOf(runCatching { JSONObject(initialDraft).takeIf {it.optInt("version")==1}?.toString() }.getOrNull() ?: JSONObject().put("version",1).put("drafts",JSONObject().put("$initialScope/main",initialDraft)).toString())}
+        var draftStore by rememberSaveable {mutableStateOf(runCatching { JSONObject(initialDraft).takeIf {it.optInt("version")==1&&it.optJSONObject("drafts")!=null}?.toString() }.getOrNull() ?: JSONObject().put("version",1).put("drafts",JSONObject().put("$initialScope/main",initialDraft)).toString())}
     var draft by rememberSaveable {mutableStateOf("")}
     var pending by rememberSaveable {mutableStateOf(initialPending)}
     var tasks by remember {mutableStateOf<List<JSONObject>>(emptyList())}
     var nextCursor by remember {mutableStateOf("")}
+    var historyLoading by remember {mutableStateOf(false)}
+    var modelsLoading by remember {mutableStateOf(false)}
+    var modelsError by remember {mutableStateOf("")}
     var olderLoaded by remember {mutableStateOf(false)}
     var error by remember {mutableStateOf("")}
     var busy by remember {mutableStateOf(false)}
@@ -51,11 +77,21 @@ internal fun GuestChatScreen(name:String, initialDraft:String, initialPending:St
     var files by rememberSaveable {mutableStateOf(false)}
     var filePath by rememberSaveable {mutableStateOf("")}
     var conversation by rememberSaveable {mutableStateOf("main")}
+    var model by rememberSaveable {mutableStateOf(JSONObject(draftStore).optString("model"))}
+    var effort by rememberSaveable {mutableStateOf(JSONObject(draftStore).optString("effort"))}
     fun persist() {
         val store=JSONObject(draftStore)
         store.getJSONObject("drafts").put("$currentScope/$conversation",draft)
-        store.put("scope",currentScope).put("conversation",conversation)
+        store.put("scope",currentScope).put("conversation",conversation).put("model",model).put("effort",effort)
         draftStore=store.toString();onPersist(draftStore,pending)
+    }
+    fun acknowledge(request:JSONObject,clearDraft:Boolean=true) {
+        if(runCatching {JSONObject(pending).optString("operationId")}.getOrNull()!=request.optString("operationId"))return
+        if(clearDraft) {
+            val result=acknowledgeGuestDraft(draftStore,"$currentScope/$conversation",draft,request)
+            draftStore=result.first;draft=result.second
+        }
+        pending="";persist()
     }
     fun selectChat(nextScope:String,nextConversation:String) {
         persist();currentScope=nextScope;conversation=nextConversation
@@ -65,24 +101,27 @@ internal fun GuestChatScreen(name:String, initialDraft:String, initialPending:St
     LaunchedEffect(Unit) {
         val store=JSONObject(draftStore)
         val outbox=runCatching {JSONObject(pending)}.getOrNull()
-        currentScope=outbox?.optString("scopeId",initialScope) ?: store.optString("scope",initialScope)
-        conversation=outbox?.optString("conversationId","main") ?: store.optString("conversation","main")
+        currentScope=store.optString("scope").ifBlank {outbox?.optString("scopeId",initialScope) ?: initialScope}
+        conversation=store.optString("conversation").ifBlank {outbox?.optString("conversationId","main") ?: "main"}
         draft=store.getJSONObject("drafts").optString("$currentScope/$conversation")
     }
     var models by remember {mutableStateOf<List<JSONObject>>(emptyList())}
-    var model by rememberSaveable {mutableStateOf("")}
-    var effort by rememberSaveable {mutableStateOf("")}
     var guest by remember {mutableStateOf<JSONObject?>(null)}
+    var refreshRevision by remember {mutableStateOf(0)}
     suspend fun refresh() {
-        guest=onRequest("guest/self",null)
+        val revision=++refreshRevision
+        val nextGuest=onRequest("guest/self",null)
         val response=onRequest("guest/tasks",null)
+        if(revision!=refreshRevision)return
+        guest=nextGuest
         val rows=response.getJSONArray("tasks")
         val latest=(0 until rows.length()).map {rows.getJSONObject(it)}.reversed()
         val ids=latest.map {it.getString("operationId")}.toSet()
         tasks=tasks.filter {it.getString("operationId") !in ids}+latest
         if(!olderLoaded) nextCursor=response.optString("nextCursor").takeUnless {it=="null"}.orEmpty()
         if(pending.isNotBlank() && tasks.any {it.optString("operationId")==JSONObject(pending).optString("operationId")}) {
-            pending="";draft="";persist()
+            val request=JSONObject(pending)
+            acknowledge(request,clearDraft=tasks.first {it.optString("operationId")==request.optString("operationId")}.optString("state")!="cancelled")
         }
     }
     var downloadSpec by rememberSaveable {mutableStateOf("")}
@@ -126,10 +165,16 @@ internal fun GuestChatScreen(name:String, initialDraft:String, initialPending:St
     }
     if(files) {GuestWorkspaceScreen(currentScope,{files=false},initialPath=filePath,onRequest=onRequest);return}
     if(shared) {GuestSharedScreen({shared=false},{scopeId->selectChat(scopeId,"main");shared=false},onRequest);return}
-    LaunchedEffect(Unit) {try {
-        val list=onRequest("guest/models",null).getJSONArray("models")
-        models=(0 until list.length()).map {list.getJSONObject(it)}
-    }catch(e:Exception){if(e is kotlinx.coroutines.CancellationException) throw e;}}
+    suspend fun refreshModels() {
+        if(modelsLoading)return
+        modelsLoading=true
+        try {
+            val list=onRequest("guest/models",null).getJSONArray("models")
+            models=(0 until list.length()).map {list.getJSONObject(it)};modelsError=""
+        }catch(e:Exception){if(e is kotlinx.coroutines.CancellationException)throw e;modelsError=e.message ?: "Не удалось загрузить модели"}
+        finally{modelsLoading=false}
+    }
+    LaunchedEffect(Unit) {refreshModels()}
     LaunchedEffect(Unit) {while(isActive){try{refresh();error=""}catch(e:Exception){if(e is kotlinx.coroutines.CancellationException) throw e;error=e.message.orEmpty()};delay(2000)}}
     val settings=context.getSharedPreferences("companion",android.content.Context.MODE_PRIVATE)
     var themeMode by remember {mutableStateOf(settings.getString("themeMode","system").orEmpty())}
@@ -137,14 +182,15 @@ internal fun GuestChatScreen(name:String, initialDraft:String, initialPending:St
     val updates=remember {AppUpdates(context.applicationContext,scope)}
     if(updatesOpen) {UpdatesScreen(updates,{updatesOpen=false});return}
     fun submit() {
-        if(busy||draft.isBlank()) return
+        if(busy||(draft.isBlank()&&pending.isBlank())) return
         if(pending.isBlank()) {
             pending=JSONObject().put("operationId",UUID.randomUUID().toString()).put("text",draft).put("conversationId",conversation).put("scopeId",currentScope)
                 .also {if(model.isNotBlank()) it.put("model",model);if(effort.isNotBlank()) it.put("effort",effort)}.toString()
             persist()
         }
+        val request=JSONObject(pending)
         busy=true;scope.launch {try {
-            onRequest("guest/send",JSONObject(pending));pending="";draft="";persist();refresh();error=""
+            val accepted=onRequest("guest/send",request);acknowledge(request,clearDraft=accepted.optString("state")!="cancelled");refresh();error=""
         }catch(e:Exception){if(e is kotlinx.coroutines.CancellationException) throw e;error=e.message.orEmpty()}finally{busy=false}}
     }
     fun openFile(raw:String):String? {
@@ -159,14 +205,17 @@ internal fun GuestChatScreen(name:String, initialDraft:String, initialPending:St
     }.toMutableList()
     if(pending.isNotBlank()&&!tasks.any {it.optString("operationId")==JSONObject(pending).optString("operationId")}) {
         val p=JSONObject(pending)
-        queued+=LocalMessage(p.getString("operationId"),p.optString("text"),emptyList(),threadId=conversation)
+        queued+=LocalMessage(p.getString("operationId"),p.optString("text"),emptyList(),threadId=p.optString("scopeId","default")+"/"+p.optString("conversationId","main"))
     }
     fun stopLabel(reason:String)=when(reason) {
         "storage_limit"->"Гостевое хранилище заполнено"
         "quota_limit"->"Выделенная квота исчерпана"
         "execution_disabled"->"Владелец выключил гостевой исполнитель"
+        "setup_failed"->"Гостевая среда недоступна. Владельцу нужно проверить настройки агента"
+        "access_revoked"->"Владелец отозвал гостевой доступ"
         "sharing_revoked"->"Владелец отозвал доступ к ресурсу"
         "meter_uncertain"->"Расход требует проверки владельцем"
+        "launch_rejected"->"Codex отклонил запуск. Проверьте выбранную модель и усилие"
         "cancelled"->"Задача отменена"
         else->""
     }
@@ -189,7 +238,7 @@ internal fun GuestChatScreen(name:String, initialDraft:String, initialPending:St
                 }.toList()
                 add(ChatLine("assistant",if(images.isNotEmpty()) imagePattern.replace(message,"") else message,turnId=id,id="$id:answer:$i",images=images))
             }
-            if(state !in listOf("running","cancel_requested")) add(ChatLine("outcome",guestTaskLabel(state)+"\n"+stopLabel(output?.optString("stopReason").orEmpty()),turnId=id,id="$id:outcome",outcomeSummary=guestTaskLabel(state),
+            if(state !in listOf("running","cancel_requested")) add(ChatLine("outcome",guestTaskOutcome(task)+"\n"+stopLabel(output?.optString("stopReason").orEmpty()),turnId=id,id="$id:outcome",outcomeSummary=guestTaskOutcome(task),
                 quotaSummary=result?.optJSONObject("measurement")?.optJSONObject("usage")?.let {u->"${u.optDouble("fiveHours")} п.п. за 5ч · ${u.optDouble("week")} п.п. недели"}.orEmpty()))
         }
     }
@@ -212,7 +261,14 @@ internal fun GuestChatScreen(name:String, initialDraft:String, initialPending:St
     }
     val waiting=if(queued.isNotEmpty()) {
         if(tasks.any {it.optString("state")=="uncertain"}) "Владелец должен согласовать расход прерванной задачи, чтобы освободить очередь"
-        else runtime?.optString("reason").orEmpty()
+        else if(rows.any {it.optString("reason")=="waiting_for_budget_or_meter"}) {
+            val exhausted=listOf("fiveHours","week").any {key->
+                val q=guest?.optJSONObject("quotas")?.optJSONObject(key)
+                q!=null&&q.optJSONObject("rule")?.optString("mode")!="unlimited"&&q.optDouble("remaining",0.0)<=0
+            }
+            if(exhausted) "Квота исчерпана. Запрос остаётся в очереди до пополнения или отмены"
+            else "Ожидаем доступный счётчик и общий лимит Codex. Запрос остаётся в очереди"
+        } else runtime?.optString("reason").orEmpty()
     } else ""
     val chatLines=listOf(ChatLine("system",summary,id="guest-quota")) +
         if(waiting.isNotBlank()) listOf(ChatLine("system",waiting,id="guest-wait"))+taskLines else taskLines
@@ -238,8 +294,8 @@ internal fun GuestChatScreen(name:String, initialDraft:String, initialPending:St
             queue = queued,
             selectedThreadId = "$currentScope/$conversation",
             projects = projects,
-            catalogLoading = false,
-            catalogError = "",
+            catalogLoading = modelsLoading,
+            catalogError = modelsError,
             models = catalog,
             selectedModel = model,
             selectedEffort = effort,
@@ -264,7 +320,7 @@ internal fun GuestChatScreen(name:String, initialDraft:String, initialPending:St
             transferringFileId = "",
             transferProgress = null,
             historyHasMore = nextCursor.isNotBlank(),
-            historyLoading = false,
+            historyLoading = historyLoading,
             historyError = error,
             initialHistoryLoading = guest==null&&error.isBlank(),
             initialHistoryError = if(guest==null) error else "",
@@ -275,7 +331,7 @@ internal fun GuestChatScreen(name:String, initialDraft:String, initialPending:St
             onDeleteThread = {it -> error("Действие недоступно гостевому подключению")},
             onMoveThread = {_, _ -> error("Действие недоступно гостевому подключению")},
             onNewChat = {sid->selectChat(sid ?: currentScope,UUID.randomUUID().toString())},
-            onRefreshCatalog = {scope.launch {try{refresh()}catch(e:Exception){if(e is kotlinx.coroutines.CancellationException)throw e;error=e.message.orEmpty()}}},
+            onRefreshCatalog = {scope.launch {refreshModels();try{refresh()}catch(e:Exception){if(e is kotlinx.coroutines.CancellationException)throw e;error=e.message.orEmpty()}}},
             onRefreshLimits = {scope.launch {try{refresh()}catch(e:Exception){if(e is kotlinx.coroutines.CancellationException)throw e;error=e.message.orEmpty()}}},
             onResetLimits = {it -> error("Действие недоступно гостевому подключению")},
             resetMessage = "",
@@ -283,8 +339,8 @@ internal fun GuestChatScreen(name:String, initialDraft:String, initialPending:St
             resetPending = false,
             onSubagentRequest = {_, _ -> error("Действие недоступно гостевому подключению")},
             onAdbRequest = {_, _ -> error("Действие недоступно гостевому подключению")},
-            onModel = {model=it},
-            onEffort = {effort=it},
+            onModel = {model=it;persist()},
+            onEffort = {effort=it;persist()},
             onAttach = {if(!busy&&pending.isBlank()) attachmentPicker.launch(arrayOf("*/*"))},
             onRemoveAttachment = {it -> error("Действие недоступно гостевому подключению")},
             onFetchFiles = {filePath="";files=true},
@@ -295,13 +351,13 @@ internal fun GuestChatScreen(name:String, initialDraft:String, initialPending:St
             onSaveWorkspace = {it -> error("Действие недоступно гостевому подключению")},
             onResolveProjectFile = {openFile(it)},
             onSaveChatImage = {image->downloadSpec=JSONObject().put("scopeId",currentScope).put("path",image.id).toString();imageDownload.launch(image.name)},
-            onLoadOlder = {scope.launch {try{
- val response=onRequest("guest/tasks?before=${android.net.Uri.encode(nextCursor)}",null);val a=response.getJSONArray("tasks")
+            onLoadOlder = {if(!historyLoading&&nextCursor.isNotBlank()) {historyLoading=true;val cursor=nextCursor;scope.launch {try{
+ val response=onRequest("guest/tasks?before=${android.net.Uri.encode(cursor)}",null);val a=response.getJSONArray("tasks")
  tasks=((0 until a.length()).map {a.getJSONObject(it)}.reversed()+tasks).distinctBy {it.getString("operationId")}
  nextCursor=response.optString("nextCursor").takeUnless {it=="null"}.orEmpty();olderLoaded=true
- }catch(e:Exception){if(e is kotlinx.coroutines.CancellationException)throw e;error=e.message.orEmpty()}}},
+ }catch(e:Exception){if(e is kotlinx.coroutines.CancellationException)throw e;error=e.message.orEmpty()}finally{historyLoading=false}}}},
             onSend = {submit()},
-            onCancelQueued = {item->busy=true;scope.launch {try{onRequest("guest/cancel",JSONObject().put("operationId",item.id));refresh()}catch(e:Exception){if(e is kotlinx.coroutines.CancellationException)throw e;error=e.message.orEmpty()}finally{busy=false}}},
+            onCancelQueued = {item->if(!busy){busy=true;scope.launch {try{onRequest("guest/cancel",JSONObject().put("operationId",item.id));if(pending.isNotBlank()&&JSONObject(pending).optString("operationId")==item.id)acknowledge(JSONObject(pending),clearDraft=false);refresh()}catch(e:Exception){if(e is kotlinx.coroutines.CancellationException)throw e;error=e.message.orEmpty()}finally{busy=false}}}},
             onSteerQueued = {it -> error("Действие недоступно гостевому подключению")},
             onCancelTransfer = {},
             onDisconnect = onClose,

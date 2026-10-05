@@ -1,7 +1,7 @@
 """Native remote-environment runner; credentials stay in a private broker.
 
-Not enabled in production until host idle detection and all tool routing have
-been verified. The caller provisions the broker; this module never copies auth.
+The Linux runtime supplies the owner-idle gate and provisions the broker;
+this module never copies auth or exposes it to the isolated executor.
 """
 import queue
 import time
@@ -23,6 +23,8 @@ class GuestRunner:
         self.rpc=None
 
     def __call__(self, task, checkpoint):
+        checked=checkpoint()
+        if checked['stop']:return {'status':'interrupted','messages':[],'artifacts':[],'stopReason':checked.get('stopReason','')}
         gateway=ExecutorGateway(self.workspace,self.codex,resource_limits=self.resource_limits)
         self.gateway=gateway
         rpc=None
@@ -55,7 +57,12 @@ class GuestRunner:
                 'environments':environments}
             for key in ('model','effort'):
                 if task.get(key):turn_params[key]=task[key]
-            turn=rpc.call('turn/start',turn_params)['turn']
+            # A protocol rejection before acceptance is a known failure, unlike
+            # a transport timeout which must remain uncertain and block replay.
+            from .server import RpcError
+            try:turn=rpc.call('turn/start',turn_params)['turn']
+            except RpcError:
+                return {'status':'failed','messages':[],'artifacts':[],'stopReason':'launch_rejected'}
             self.on_started(task,thread['id'],turn['id'])
             deadline=time.monotonic()+self.timeout
             interrupt_deadline=None

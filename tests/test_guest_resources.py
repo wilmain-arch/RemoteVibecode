@@ -103,3 +103,88 @@ class ResourceTests(unittest.TestCase):
         (own/'escape').symlink_to(self.source)
         with self.assertRaises(ValueError):self.resources.own_write(self.guest,{'path':'escape/app.txt','dataBase64':'eA=='})
         self.assertEqual((self.source/'app.txt').read_text(),'base')
+
+    def test_copy_excludes_secret_directories(self):
+        for directory in ('.env.production','auth.json','secret.key'):
+            target=self.source/directory;target.mkdir();(target/'nested.txt').write_text('secret fixture')
+        self.grant();scope=self.copy();root=self.resources.copy_workspace(self.guest,scope)
+        for directory in ('.env.production','auth.json','secret.key'):
+            self.assertFalse((root/directory).exists())
+
+    def test_revocation_during_preview_and_history_denies_response(self):
+        self.grant('view')
+        original=read_regular
+        def revoke_read(*args,**kwargs):
+            result=original(*args,**kwargs);self.grant(action='unshare');return result
+        with patch('bridge.guest_resources.read_regular',side_effect=revoke_read):
+            with self.assertRaises(AccessError):self.resources.read(self.guest,'thread','fixture-thread','app.txt',True)
+        self.grant('view')
+        def revoke_history(*args):
+            self.grant(action='unshare');return {'turns':[{'text':'must not escape'}]}
+        self.resources.bridge.history=revoke_history
+        with self.assertRaises(AccessError):self.resources.history(self.guest,'fixture-thread')
+
+    def test_revocation_during_copy_read_and_upload_denies_response(self):
+        self.grant();scope=self.copy();original=read_regular
+        def revoke_read(*args,**kwargs):
+            result=original(*args,**kwargs);self.grant(action='unshare');return result
+        with patch('bridge.guest_resources.read_regular',side_effect=revoke_read):
+            with self.assertRaises(AccessError):self.resources.own_read(self.guest,scope,'app.txt',True)
+        self.grant()
+        original_check=self.resources.storage_status
+        def revoke_storage(*args,**kwargs):
+            result=original_check(*args,**kwargs);self.grant(action='unshare');return result
+        with patch.object(self.resources,'storage_status',side_effect=revoke_storage):
+            with self.assertRaises(AccessError):self.resources.own_write(self.guest,{'scopeId':scope,'path':'new.txt','dataBase64':'eA=='})
+        self.assertFalse((self.root/'guest-runtime'/self.guest/'copies'/scope/'new.txt').exists())
+
+    def test_new_nested_file_review_and_apply(self):
+        self.grant();scope=self.copy();root=self.resources.copy_workspace(self.guest,scope)
+        (root/'new').mkdir();(root/'new'/'file.txt').write_text('new file')
+        preview=self.resources.review(scope,'new/file.txt')
+        self.resources.review(scope,'new/file.txt',True,preview['guestHash'])
+        self.assertEqual((self.source/'new'/'file.txt').read_text(),'new file')
+
+    def test_copy_respects_aggregate_storage_limit(self):
+        self.grant();root=self.resources.own_root(self.guest);(root/'existing.txt').write_bytes(b'x'*64)
+        with patch('bridge.guest_resources.MAX_GUEST_STORAGE',65):
+            with self.assertRaises(ValueError):self.copy()
+        self.assertEqual(self.access.db.execute('SELECT count(*) FROM guest_copies').fetchone()[0],0)
+
+    def test_upload_can_replace_file_at_storage_capacity(self):
+        root=self.resources.own_root(self.guest);(root/'existing.txt').write_bytes(b'x'*64)
+        with patch('bridge.guest_resources.MAX_GUEST_STORAGE',64):
+            self.resources.own_write(self.guest,{'path':'existing.txt','dataBase64':base64.b64encode(b'y'*64).decode()})
+        self.assertEqual((root/'existing.txt').read_bytes(),b'y'*64)
+        self.assertFalse(any(p.name.startswith('rv-upload-') for p in root.iterdir()))
+
+    def test_review_preserves_existing_file_permissions(self):
+        self.grant();scope=self.copy();root=self.resources.copy_workspace(self.guest,scope)
+        (self.source/'app.txt').chmod(0o755);(root/'app.txt').write_text('changed script')
+        preview=self.resources.review(scope,'app.txt')
+        self.resources.review(scope,'app.txt',True,preview['guestHash'])
+        self.assertEqual((self.source/'app.txt').stat().st_mode & 0o777,0o755)
+
+    def test_large_utf8_preview_is_bounded_and_marked_truncated(self):
+        self.grant('view');(self.source/'large.txt').write_text('я'*100000)
+        preview=self.resources.read(self.guest,'thread','fixture-thread','large.txt',True)
+        self.assertTrue(preview['previewable']);self.assertTrue(preview['truncated'])
+        self.assertEqual(preview['text'],'я'*65536)
+        with self.assertRaises(ValueError):read_regular(self.source,'large.txt',131072)
+
+    def test_invalid_resource_and_scope_are_validation_errors(self):
+        for kind,resource in (([],[]),('wrong','fixture-thread'),('thread',None)):
+            with self.assertRaises(ValueError):self.resources.right(self.guest,kind,resource)
+        with self.assertRaises(ValueError):self.resources.own_root(self.guest,[])
+
+    def test_owner_lists_copies_without_any_guest_tasks_and_paginates(self):
+        self.grant();scope=self.copy()
+        self.assertEqual(self.resources.owner_copies(self.guest)['copies'][0]['id'],scope)
+        for number in range(105):
+            self.access.db.execute('INSERT INTO guest_copies VALUES(?,?,?,?,?,?)',
+                (f'{number:032x}',self.guest,'thread','fixture-thread',str(self.source),'{}'))
+        first=self.resources.owner_copies(self.guest)
+        second=self.resources.owner_copies(self.guest,first['nextCursor'])
+        self.assertEqual(len(first['copies']),100);self.assertEqual(len(second['copies']),6)
+        self.assertEqual(len({c['id'] for c in first['copies']+second['copies']}),106)
+        with self.assertRaises(ValueError):self.resources.owner_copies(self.guest,'foreign-copy')

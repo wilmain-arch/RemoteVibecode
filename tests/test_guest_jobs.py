@@ -128,7 +128,8 @@ class GuestJobsTest(unittest.TestCase):
         request={'operationId':'operation-123','confirmed':True,'additionalUsage':{'fiveHours':0,'week':2}}
         self.assertEqual(self.jobs.resolve(request)['state'],'failed')
         self.assertEqual(self.access.view(self.guest)['quotas']['week']['spent'],5)
-        with self.assertRaises(ValueError):self.jobs.resolve(request)
+        self.assertEqual(self.jobs.resolve(request)['state'],'failed')
+        self.assertEqual(self.access.view(self.guest)['quotas']['week']['spent'],5)
         self.enqueue('operation-456')
         self.assertEqual(self.jobs.claim()['operationId'],'operation-456')
 
@@ -153,3 +154,50 @@ class GuestJobsTest(unittest.TestCase):
         self.enqueue();self.jobs.claim();self.jobs.cancel(self.guest,'operation-123')
         self.jobs.update('operation-123','queued')
         self.assertEqual(self.jobs.get(self.guest,'operation-123')['state'],'cancel_requested')
+
+    def test_resolution_preserves_published_output_and_rejects_changed_retry(self):
+        self.enqueue();self.jobs.claim();self.jobs.recover()
+        self.jobs.update('operation-123','uncertain',result={'output':{'messages':['published fixture'],'artifacts':[]}})
+        request={'operationId':'operation-123','confirmed':True,'additionalUsage':{'fiveHours':0,'week':2}}
+        first=self.jobs.resolve(request)
+        self.assertEqual(first['result']['output']['messages'],['published fixture'])
+        self.assertEqual(self.jobs.resolve(request),first)
+        with self.assertRaises(ValueError):self.jobs.resolve({**request,'additionalUsage':{'fiveHours':0,'week':3}})
+
+    def test_cancel_before_acceptance_is_durable_and_owned(self):
+        self.assertEqual(self.jobs.cancel(self.guest,'cancel-before-send')['state'],'cancelled')
+        result=self.jobs.enqueue(self.guest,{'operationId':'cancel-before-send','text':'Synthetic task'})
+        self.assertEqual(result['state'],'cancelled')
+        self.assertIsNone(self.jobs.claim())
+        with self.assertRaises(AccessError):self.jobs.cancel(self.create_guest(),'cancel-before-send')
+
+    def test_tasks_include_creation_time(self):
+        self.assertGreater(self.enqueue()['created'],0)
+
+    def test_prelaunch_cancel_retains_uncertain_measurement(self):
+        self.enqueue()
+        def reserved():self.jobs.cancel(self.guest,'operation-123')
+        snapshots=iter([sample(),sample(week=65)])
+        scheduler=GuestScheduler(self.access,self.jobs,snapshot=lambda:next(snapshots),owner_idle=lambda:True,
+            runner=lambda *args:self.fail('cancelled task must not launch'),on_reserved=reserved)
+        self.assertEqual(scheduler.step()['state'],'uncertain')
+        self.assertEqual(self.jobs.owner_list()['tasks'][0]['state'],'uncertain')
+
+    def test_replay_is_read_only_and_checks_exact_payload(self):
+        request={'operationId':'replay-read-only','text':'Synthetic task'}
+        self.assertIsNone(self.jobs.replay(self.guest,request))
+        self.assertEqual(self.jobs.list(self.guest)['tasks'],[])
+        accepted=self.jobs.enqueue(self.guest,request)
+        self.assertEqual(self.jobs.replay(self.guest,request),accepted)
+        with self.assertRaises(AccessError):self.jobs.replay(self.guest,{**request,'text':'Changed payload'})
+        with self.assertRaises(AccessError):self.jobs.replay(self.create_guest(),request)
+
+    def test_execution_times_do_not_include_queue_wait_or_overwrite_start(self):
+        from unittest.mock import patch
+        self.enqueue()
+        self.assertIsNone(self.jobs.get(self.guest,'operation-123')['startedAt'])
+        with patch('bridge.guest_jobs.time.time',return_value=100):self.jobs.update('operation-123','running',turn='turn-fixture')
+        with patch('bridge.guest_jobs.time.time',return_value=110):self.jobs.update('operation-123','running',turn='turn-fixture')
+        with patch('bridge.guest_jobs.time.time',return_value=150):self.jobs.update('operation-123','completed')
+        task=self.jobs.get(self.guest,'operation-123')
+        self.assertEqual(task['startedAt'],100);self.assertEqual(task['completedAt'],150)

@@ -114,3 +114,49 @@ class RuntimeTest(unittest.TestCase):
             finally:
                 if runtime:runtime.close()
                 provider.close();access.db.close()
+
+class RuntimeStatusTests(unittest.TestCase):
+    def test_unknown_task_reason_visible_to_every_guest_without_identity(self):
+        with tempfile.TemporaryDirectory() as temp:
+            access=GuestAccess(Path(temp)/'guest.sqlite3');jobs=GuestJobs(access)
+            try:
+                secret=secrets.token_urlsafe(32)
+                guest=access.invite({'operationId':'status-invite-fixture','secret':secret,'name':'Private fixture name','quotas':{}},sample())['guestId']
+                access.redeem(secret,'device-fixture',secrets.token_urlsafe(32))
+                jobs.enqueue(guest,{'operationId':'status-task-fixture','text':'Private fixture task'})
+                jobs.claim();jobs.recover()
+                runtime=GuestRuntime.__new__(GuestRuntime)
+                runtime.enabled=True;runtime.busy=threading.Event();runtime.reason=''
+                runtime.bridge=SimpleNamespace(guests=access,paired=True,turn_lock=threading.Lock(),active_turns={},queue_lock=threading.Lock(),queued_sends={})
+                with patch('bridge.guest_runtime.desktop_present',return_value=False):
+                    status=runtime.status()
+                    self.assertIn('согласовать расход',status['reason'])
+                    self.assertNotIn('Private fixture',json.dumps(status))
+            finally:access.db.close()
+
+class RuntimeRevocationTests(unittest.TestCase):
+    def test_revoke_checkpoint_stops_runner_without_inventing_unknown_outcome(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);access=GuestAccess(root/'guest.sqlite3');jobs=GuestJobs(access)
+            try:
+                secret=secrets.token_urlsafe(32)
+                guest=access.invite({'operationId':'revoke-runtime-fixture','secret':secret,'name':'Fixture','quotas':{}},sample())['guestId']
+                access.redeem(secret,'device-fixture',secrets.token_urlsafe(32))
+                task=jobs.enqueue(guest,{'operationId':'revoke-running-fixture','text':'Synthetic task'})
+                bridge=SimpleNamespace(guests=access,guest_jobs=jobs,state_file=root/'state.json')
+                bridge.guest_resources=GuestResources(bridge)
+                work=bridge.guest_resources.own_root(guest);broker=root/'broker';broker.mkdir()
+                runtime=GuestRuntime.__new__(GuestRuntime);runtime.bridge=bridge;runtime.codex=CODEX
+                runtime.account_marker=None;runtime.enabled=True;runtime.stopping=threading.Event()
+                runtime.provision=lambda _:(work,broker)
+                def fake_runner(**kwargs):
+                    def run(task,checkpoint):
+                        access.change({'operationId':'revoke-during-run','guestId':guest,'action':'revoke'},sample())
+                        checked=checkpoint()
+                        self.assertTrue(checked['stop']);self.assertEqual(checked['stopReason'],'access_revoked')
+                        return {'status':'interrupted','messages':[],'stopReason':checked['stopReason']}
+                    return run
+                with patch('bridge.guest_runtime.GuestRunner',side_effect=fake_runner):
+                    result=runtime.run({'guestId':guest,**task},lambda:{'stop':False})
+                self.assertEqual(result['status'],'interrupted')
+            finally:access.db.close()

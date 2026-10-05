@@ -214,7 +214,7 @@ private fun diffRows(diff: String): List<DiffRow> {
 }
 
 @Composable
-private fun ArtifactDiff(diff: String) {
+internal fun ArtifactDiff(diff: String) {
     val rows = remember(diff) { diffRows(diff) }
     val colors = MaterialTheme.colorScheme
     val density = LocalDensity.current

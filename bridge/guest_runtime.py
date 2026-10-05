@@ -15,6 +15,7 @@ import sys
 import stat
 import threading
 import time
+from .guest_access import AccessError
 from .guest_runner import GuestRunner
 from .guest_scheduler import GuestScheduler
 from .guest_sandbox import IsolatedExecutor
@@ -104,9 +105,23 @@ class GuestRuntime:
             self.bridge._save_state()
         return self.status()
 
+    def waiting_reason(self):
+        if not self.enabled:return 'Владелец выключил гостевой исполнитель'
+        if time.monotonic()<getattr(self.bridge,'update_until',0):return 'Агент обновляется'
+        with self.bridge.guests.lock:
+            if self.bridge.guests.db.execute("SELECT 1 FROM execution WHERE state='uncertain' LIMIT 1").fetchone() or self.bridge.guests.db.execute("SELECT 1 FROM guest_jobs WHERE state='uncertain' LIMIT 1").fetchone():
+                return 'Владелец должен согласовать расход прерванной задачи, чтобы освободить очередь'
+        if not self.bridge.paired:return 'Владелец отключил доступ'
+        if desktop_present():return 'Ожидание закрытия окна Codex Desktop'
+        with self.bridge.turn_lock:
+            if self.bridge.active_turns:return 'Ожидание завершения задачи владельца'
+        with self.bridge.queue_lock:
+            if self.bridge.queued_sends:return 'Ожидание сообщений владельца в очереди'
+        return ''
+
     def status(self):
         return {'enabled':self.enabled,'busy':self.busy.is_set(),'supported':sys.platform=='linux',
-            'desktopMustBeClosed':True,'reason':self.reason}
+            'desktopMustBeClosed':True,'reason':self.waiting_reason() or self.reason}
 
     def owner_idle(self):
         if not self.bridge.paired or desktop_present():return False
@@ -150,11 +165,16 @@ class GuestRuntime:
 
     def run(self,task,checkpoint):
         from .server import CodexRpc
-        if self.bridge.guest_resources.storage_status(task['guestId'])['exhausted']:
-            return {'status':'failed','messages':[],'stopReason':'storage_limit'}
-        work,broker=self.provision(task['guestId'])
         scope=task.get('scopeId','default')
-        if scope!='default':work=self.bridge.guest_resources.copy_workspace(task['guestId'],scope)
+        try:
+            if self.bridge.guest_resources.storage_status(task['guestId'])['exhausted']:
+                return {'status':'failed','messages':[],'stopReason':'storage_limit'}
+            work,broker=self.provision(task['guestId'])
+            if scope!='default':work=self.bridge.guest_resources.copy_workspace(task['guestId'],scope)
+        except AccessError:
+            return {'status':'interrupted','messages':[],'stopReason':'access_revoked' if scope=='default' else 'sharing_revoked'}
+        except ValueError:
+            return {'status':'failed','messages':[],'stopReason':'setup_failed'}
         conversation=scope+'-'+task['conversationId']
         thread=self.bridge.guest_jobs.conversation(task['guestId'],conversation)
         task={**task,'threadId':thread}
@@ -167,9 +187,11 @@ class GuestRuntime:
                 _,marker=self.account_auth()
                 if marker!=self.account_marker:raise RuntimeError('Аккаунт владельца изменился; гостевой доступ отозван')
             result=checkpoint()
-            if self.bridge.guest_resources.storage_status(task['guestId'])['exhausted']:
-                result['stop']=True
-                result['stopReason']='storage_limit'
+            try:
+                if self.bridge.guest_resources.storage_status(task['guestId'])['exhausted']:
+                    result['stop']=True;result['stopReason']='storage_limit'
+            except AccessError:
+                result['stop']=True;result['stopReason']='access_revoked'
             if not self.enabled or self.stopping.is_set():result['stop']=True;result['stopReason']='execution_disabled'
             if scope!='default':
                 try:self.bridge.guest_resources.copy_workspace(task['guestId'],scope)
@@ -195,7 +217,7 @@ class GuestRuntime:
             if not self.enabled:continue
             try:
                 result=scheduler.step()
-                self.reason='' if result else 'Ожидание завершения задач владельца или закрытия Desktop'
+                self.reason='' if result else self.waiting_reason()
             except Exception:
                 self.reason='Задача остановлена или ожидает проверки счётчика. Проверьте очередь.'
             finally:self.busy.clear()
