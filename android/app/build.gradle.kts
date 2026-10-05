@@ -13,8 +13,8 @@ android {
         minSdk = 26
         targetSdk = 35
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        versionCode = 48
-        versionName = "1.0.0"
+        versionCode = 49
+        versionName = "1.1.0"
     }
 
     // Isolated package for device tests with synthetic credentials and notification settings.
