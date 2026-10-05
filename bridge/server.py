@@ -1439,6 +1439,8 @@ class Bridge:
             activities = []
             messages = []
             generated_images = []
+            artifacts = []
+            artifact_budget = 256 * 1024
             for item_index, item in enumerate(turn.get("items", [])):
                 item_type = item.get("type")
                 if item_type == "userMessage":
@@ -1523,6 +1525,16 @@ class Bridge:
                                            "status": item.get("status") or "completed"})
                 elif item_type == "fileChange":
                     changes = item.get("changes") or []
+                    for change_index, change in enumerate(changes if isinstance(changes, list) else []):
+                        if not isinstance(change, dict) or len(artifacts) >= 100:
+                            continue
+                        raw_diff = str(change.get("diff") or "")
+                        diff = raw_diff[:min(max(artifact_budget, 0), 128 * 1024)]
+                        artifact_budget -= len(diff)
+                        artifacts.append({"id": f"{turn_id}:{item.get('id', item_index)}:{change_index}",
+                            "path": str(change.get("path") or ""), "diff": diff,
+                            "status": item.get("status") or "completed", "kind": change.get("kind"),
+                            "truncated": len(diff) < len(raw_diff)})
                     for change in changes[:8] if isinstance(changes, list) else []:
                         if isinstance(change, dict):
                             name = Path(str(change.get("path") or "")).name
@@ -1564,6 +1576,9 @@ class Bridge:
                 turns.append({"id": f"{turn_id}:process", "role": "process",
                               "text": "Codex работает…", "time": started_at,
                               "turnId": turn_id, "steps": 0})
+            if artifacts:
+                turns.append({"id": f"{turn_id}:artifacts", "role": "artifacts", "text": "Изменения файлов",
+                              "turnId": turn_id, "artifacts": artifacts, "time": completed_at or started_at})
             turns.extend(messages)
             outcome = turn.get("status")
             outcome_text = {

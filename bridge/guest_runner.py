@@ -9,13 +9,14 @@ from .guest_executor_gateway import ExecutorGateway
 
 
 class GuestRunner:
-    def __init__(self, *, workspace, broker, codex, rpc_factory, on_started=None, on_progress=None, timeout=3600, resource_limits=False):
+    def __init__(self, *, workspace, broker, codex, rpc_factory, on_started=None, on_progress=None, timeout=3600, resource_limits=False, on_artifacts=None):
         self.workspace=workspace
         self.broker=broker
         self.codex=codex
         self.rpc_factory=rpc_factory
         self.on_started=on_started or (lambda task,thread,turn:None)
         self.on_progress=on_progress or (lambda task,messages:None)
+        self.on_artifacts=on_artifacts or (lambda task,artifacts:None)
         self.timeout=timeout
         self.resource_limits=resource_limits
         self.gateway=None
@@ -60,6 +61,8 @@ class GuestRunner:
             interrupt_deadline=None
             interrupt_sent=False
             messages={}
+            artifacts={}
+            artifact_budget=256*1024
             next_check=0.0
             next_publish=0.0
             dirty=False
@@ -97,6 +100,20 @@ class GuestRunner:
                         dirty=True
                 if event.get('method')=='item/completed':
                     item=params.get('item') or {}
+                    if item.get('type')=='fileChange':
+                        for index, change in enumerate(item.get('changes') or []):
+                            if not isinstance(change,dict) or len(artifacts)>=100:continue
+                            path=str(change.get('path') or '')
+                            # Guest output may only refer to its isolated workspace.
+                            if path.startswith('/workspace/'):path=path[len('/workspace/'):]
+                            if path.startswith('/') or '..' in path.split('/'):continue
+                            raw=str(change.get('diff') or '')
+                            diff=raw[:min(max(artifact_budget,0),128*1024)]
+                            artifact_budget-=len(diff)
+                            ident=f"{item.get('id','file')}:{index}"
+                            artifacts[ident]={'id':ident,'path':path,'diff':diff,
+                                'status':item.get('status') or 'completed','kind':change.get('kind'),'truncated':len(diff)<len(raw)}
+                    if item.get('type')=='fileChange':self.on_artifacts(task,list(artifacts.values()))
                     if item.get('type')=='agentMessage':
                         messages[item['id']]=item.get('text','')[:1024*1024]
                         dirty=True
@@ -106,7 +123,7 @@ class GuestRunner:
                     dirty=False
                 if event.get('method')=='turn/completed' and (params.get('turn') or {}).get('id')==turn['id']:
                     return {'threadId':thread['id'],'turnId':turn['id'],'status':params['turn']['status'],
-                        'messages':list(messages.values()),'stopReason':stop_reason}
+                        'messages':list(messages.values()),'artifacts':list(artifacts.values()),'stopReason':stop_reason}
             raise TimeoutError('Гостевая задача превысила время ожидания')
         finally:
             if rpc:rpc.close()

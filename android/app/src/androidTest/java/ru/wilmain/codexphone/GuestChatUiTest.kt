@@ -28,7 +28,10 @@ class GuestChatUiTest {
             }
         }}
         compose.waitUntil(5000){compose.onAllNodesWithText("Сообщение в общей ленте").fetchSemanticsNodes().isNotEmpty()}
-        compose.onAllNodesWithText("Сообщение в общей ленте").assertCountEquals(1)
+        // The chat title may repeat its first message; count the queue bubble itself.
+        compose.onAllNodesWithTag("queued-message:fixture-queue-single").assertCountEquals(1)
+        compose.onNode(hasText("Сообщение в общей ленте") and
+            hasAnyAncestor(hasTestTag("queued-message:fixture-queue-single")), useUnmergedTree=true).assertExists()
         compose.onNodeWithText("В очереди").assertExists()
         compose.onNodeWithContentDescription("Проекты и чаты").assertExists()
         compose.onNodeWithContentDescription("Файлы проекта").assertExists()

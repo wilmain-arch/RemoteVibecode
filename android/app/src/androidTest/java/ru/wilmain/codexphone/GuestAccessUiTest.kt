@@ -37,7 +37,7 @@ class GuestAccessUiTest {
         }}
         compose.waitForIdle()
         val bitmap=compose.onRoot().captureToImage()
-        val color=bitmap.toPixelMap()[1,bitmap.height-2]
+        val color=bitmap.toPixelMap()[1,bitmap.height/2]
         assertTrue("Dark surface must not be white",color.red<0.25f&&color.green<0.25f&&color.blue<0.25f)
     }
 
@@ -47,7 +47,7 @@ class GuestAccessUiTest {
         }}
         compose.waitForIdle()
         val bitmap=compose.onRoot().captureToImage()
-        val color=bitmap.toPixelMap()[1,bitmap.height-2]
+        val color=bitmap.toPixelMap()[1,bitmap.height/2]
         assertTrue("Light surface must not be dark",color.red>0.9f&&color.green>0.9f&&color.blue>0.9f)
     }
 

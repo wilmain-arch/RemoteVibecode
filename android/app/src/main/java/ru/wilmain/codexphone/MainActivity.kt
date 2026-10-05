@@ -416,7 +416,8 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
                 role, text, item.optString("turnId"), item.optInt("steps"), activities,
                 item.optString("id"), item.optString("time"), attachments, images,
                 item.optString("outcomeSummary"), item.optString("quotaSummary"),
-                if (item.isNull("clientMessageId")) "" else item.optString("clientMessageId"))
+                if (item.isNull("clientMessageId")) "" else item.optString("clientMessageId"),
+                artifacts = parseFileArtifacts(item.optJSONArray("artifacts")))
         }
     }
 

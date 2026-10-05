@@ -175,9 +175,14 @@ class GuestRuntime:
                 try:self.bridge.guest_resources.copy_workspace(task['guestId'],scope)
                 except Exception:result['stop']=True;result['stopReason']='sharing_revoked'
             return result
+        published={'messages':[], 'artifacts':[]}
         def progress(task,messages):
-            self.bridge.guest_jobs.update(task['operationId'],'running',result={'output':{'messages':messages}})
-        runner=GuestRunner(workspace=work,broker=broker,codex=self.codex,rpc_factory=CodexRpc,on_started=started,on_progress=progress,resource_limits=True)
+            published['messages']=messages
+            self.bridge.guest_jobs.update(task['operationId'],'running',result={'output':dict(published)})
+        def artifact_progress(task,artifacts):
+            published['artifacts']=artifacts
+            self.bridge.guest_jobs.update(task['operationId'],'running',result={'output':dict(published)})
+        runner=GuestRunner(workspace=work,broker=broker,codex=self.codex,rpc_factory=CodexRpc,on_started=started,on_progress=progress,on_artifacts=artifact_progress,resource_limits=True)
         self.active_runner=runner
         try:return runner(task,guarded_checkpoint)
         finally:self.active_runner=None

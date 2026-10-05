@@ -1,6 +1,7 @@
 package ru.wilmain.codexphone
 
 import org.json.JSONObject
+import androidx.compose.ui.platform.testTag
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -117,6 +118,7 @@ internal data class ChatLine(
     val images: List<ChatImage> = emptyList(),
     val outcomeSummary: String = "", val quotaSummary: String = "",
     val clientMessageId: String = "",
+    val artifacts: List<FileArtifact> = emptyList(),
 )
 internal data class ChatImage(val id: String, val name: String)
 internal data class PendingFile(val id: String, val name: String)
@@ -706,6 +708,11 @@ internal fun CompanionUi(
                                     }
                                 }
                             }
+                            "artifacts" -> FileArtifacts(line.artifacts, line.turnId) { reference ->
+                                scope.launch { onResolveProjectFile(reference)?.let { folder ->
+                                    filesOpen = true; onBrowseWorkspace(folder)
+                                } }
+                            }
                             "process" -> {
                                 val expanded = expandedProcesses[line.turnId] ?: false
                                 Surface(shape = RoundedCornerShape(12.dp),
@@ -781,7 +788,7 @@ internal fun CompanionUi(
                             }
                             else -> Column {
                                 val previous = visibleLines.subList(0, index).lastOrNull {
-                                    it.role !in setOf("process", "system", "outcome")
+                                    it.role !in setOf("process", "system", "outcome", "artifacts")
                                 }
                                 val showHeader = previous == null || line.turnId.isBlank() ||
                                     previous.turnId != line.turnId || previous.role == "user"
@@ -819,7 +826,7 @@ internal fun CompanionUi(
                     items(visibleQueue, key = { "queue:${it.id}" }) { item ->
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                             Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.secondaryContainer,
-                                modifier = Modifier.fillMaxWidth(0.86f)) {
+                                modifier = Modifier.fillMaxWidth(0.86f).testTag("queued-message:${item.id}")) {
                                 Column(Modifier.padding(13.dp)) {
                                     Text(if (item.deliveredTurnId.isNotBlank())
                                         (if (item.steered) "Корректировка отправлена" else "Отправлено")

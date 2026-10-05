@@ -176,6 +176,8 @@ internal fun GuestChatScreen(name:String, initialDraft:String, initialPending:St
         buildList {
             add(ChatLine("user",task.optString("text"),turnId=id,id="$id:user",time=task.optLong("created").toString()))
             if(state in listOf("running","cancel_requested")) add(ChatLine("process",guestTaskLabel(state),turnId=id,id="$id:process"))
+            val artifacts=parseFileArtifacts(output?.optJSONArray("artifacts"))
+            if(artifacts.isNotEmpty()) add(ChatLine("artifacts","Изменения файлов",turnId=id,id="$id:artifacts",artifacts=artifacts))
             if(messages!=null) for(i in 0 until messages.length()) {
                 val message=messages.optString(i)
                 val imagePattern=Regex("!\\[([^\\]]*)\\]\\(([^\\s)]+)\\)")
