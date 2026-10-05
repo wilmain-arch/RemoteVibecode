@@ -27,16 +27,25 @@ import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, quote, unquote
+# Script and packaged-agent entry points use the same package imports.
+if not __package__:
+    sys.path.insert(0,str(Path(__file__).resolve().parent.parent))
+    __package__='bridge'
+    sys.modules.setdefault('bridge.server',sys.modules[__name__])
 try:
     from .adb_devices import AdbDevices
     from .interactions import InteractionInbox
     from .controls import Controls
     from .workspace_listing import listing
+    from .guest_access import GuestAccess, AccessError
+    from .guest_jobs import GuestJobs
 except ImportError:
     from adb_devices import AdbDevices
     from interactions import InteractionInbox
     from controls import Controls
     from workspace_listing import listing
+    from guest_access import GuestAccess, AccessError
+    from guest_jobs import GuestJobs
 
 try:
     from PIL import Image, ImageOps
@@ -55,19 +64,21 @@ SAFE_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f\x7f]+')
 
 
 class CodexRpc:
-    def __init__(self, on_event=None) -> None:
+    def __init__(self, on_event=None, *, executable_override=None, process_env=None, config_args=(), process_cwd=None) -> None:
         try:
             from .codex_path import resolve_codex_executable
         except ImportError:
             from codex_path import resolve_codex_executable
-        executable = resolve_codex_executable(os.environ.get("CODEX_EXECUTABLE"))
+        executable = resolve_codex_executable(executable_override or os.environ.get("CODEX_EXECUTABLE"))
         if not executable:
             raise RuntimeError("Не найден исполняемый файл Codex Desktop или CLI")
         app_server_args = ["app-server", "--listen", "stdio://"] if sys.platform == "win32" else ["app-server", "--stdio"]
         self.executable = executable
         self.healthy = False
         self.proc = subprocess.Popen(
-            [executable, *app_server_args],
+            [executable, *app_server_args, *config_args],
+            env=process_env,
+            cwd=process_cwd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -200,12 +211,23 @@ class Bridge:
         self.state_file = state_file.resolve()
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
         self.state_lock = threading.RLock()
+        self.guests = GuestAccess(self.state_file.with_name("guest-access.sqlite3"))
+        self.guest_jobs = GuestJobs(self.guests)
+        self.guest_jobs.recover()
+        self.guest_runtime = None
+        self.guest_display_lock = threading.Lock()
+        self.guest_display_cache = None
+        self.guest_display_checked = 0.0
+        from bridge.guest_resources import GuestResources
+        self.guest_resources = GuestResources(self)
         self.pin = pin
         self.pin_uses = 0
         self.pin_lock = threading.Lock()
         saved = self._load_state()
         self.token = saved.get("token") or secrets.token_urlsafe(32)
         self.paired = bool(saved.get("paired", False))
+        self.guests.bind_owner(self.token)
+        self.guest_execution_enabled = bool(saved.get("guest_execution_enabled", False))
         self.selected_thread_id = saved.get("selected_thread_id") or thread_id
         self.draft_threads: dict[str, str | None] = saved.get("draft_threads", {})
         self.project_overrides: dict[str, str] = saved.get("project_overrides", {})
@@ -257,6 +279,14 @@ class Bridge:
         self.rpc_idle_worker = threading.Thread(target=self._close_idle_rpc, daemon=True)
         self.rpc_idle_worker.start()
         threading.Thread(target=self._track_task_usage, daemon=True).start()
+        if sys.platform == "linux":
+            from bridge.guest_runtime import GuestRuntime
+            self.guest_runtime = GuestRuntime(self)
+            if self.guest_execution_enabled:
+                try: self.guest_runtime.configure(True)
+                except Exception:
+                    self.guest_runtime.reason = "Гостевой исполнитель недоступен: проверьте зависимости и Codex"
+
 
     @contextmanager
     def rpc_session(self):
@@ -427,6 +457,7 @@ class Bridge:
                 active = len(self.active_turns)
             with self.queue_lock:
                 queued = len(self.queued_sends)
+            if getattr(self, "guest_runtime", None) and self.guest_runtime.busy.is_set(): active += 1
             # Detect tasks started in Desktop, not just through this bridge.
             active = max(active, sum(t.get("status") in ("active", "inProgress")
                 for t in self.list_threads(limit=10000)))
@@ -704,6 +735,39 @@ class Bridge:
                 "week": window(rate_limits.get("secondary")),
                 "resetCredits": (result.get("rateLimitResetCredits") or {}).get("availableCount"),
                 "updatedAt": int(time.time())}
+
+    def guest_display(self,guest):
+        result=self.guests.view(guest)
+        if not any(q['rule']['mode']!='unlimited' for q in result['quotas'].values()):return result
+        with self.guests.lock:
+            active=self.guests.db.execute("SELECT 1 FROM execution WHERE guest=? AND state IN ('active','uncertain') LIMIT 1",(guest,)).fetchone()
+        if active:return result
+        try:
+            with self.guest_display_lock:
+                if self.guest_display_cache is None or time.monotonic()-self.guest_display_checked>10:
+                    self.guest_display_cache=self.guest_usage_limits()
+                    self.guest_display_checked=time.monotonic()
+                self.guests.synchronize_idle(guest,self.guest_display_cache)
+            return self.guests.view(guest)
+        except (AccessError,RpcError,RuntimeError,queue.Empty,OSError):
+            result['quotaSyncPending']=True
+            return result
+
+    def guest_usage_limits(self) -> dict:
+        # Never silently interpret a provider-specific primary bucket as 5h.
+        with self.rpc_session() as rpc:
+            result = rpc.call("account/rateLimits/read", {}, timeout=8)
+        limits = result.get("rateLimits") or {}
+        snapshot = {}
+        for value in (limits.get("primary"), limits.get("secondary")):
+            if not isinstance(value, dict):
+                continue
+            duration = value.get("windowDurationMins")
+            key = {300: "fiveHours", 10080: "week"}.get(duration)
+            used = value.get("usedPercent")
+            if key and isinstance(used, (int, float)) and not isinstance(used, bool):
+                snapshot[key] = {"remainingPercent": 100 - used, "resetsAt": value.get("resetsAt")}
+        return snapshot
 
     def reset_limits(self, idempotency_key: str) -> dict:
         if not isinstance(idempotency_key, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", idempotency_key):
@@ -1146,6 +1210,7 @@ class Bridge:
                 "task_usage": self.task_usage,
                 "token": self.token,
                 "paired": self.paired,
+                "guest_execution_enabled": getattr(self, "guest_execution_enabled", False),
                 "pending": self.pending,
                 "sent_messages": self.sent_messages,
                 "send_operations": getattr(self, "send_operations", {}),
@@ -1627,6 +1692,8 @@ class Bridge:
                 raise ValueError("Сообщение отменено")
             if client_message_id in self.sent_messages:
                 return self.sent_messages[client_message_id]
+            if getattr(self, "guest_runtime", None) is not None and self.guest_runtime.busy.is_set():
+                raise BusyError("Гостевая задача выполняется; сообщение владельца поставлено в очередь")
             fingerprint = hashlib.sha256(json.dumps({"text": text, "files": file_ids,
                 "threadId": thread_id, "model": model, "effort": effort,
                 "mode": collaboration_mode}, sort_keys=True).encode()).hexdigest()
@@ -1804,7 +1871,7 @@ class Bridge:
                 if any(file_id not in self.pending for file_id in file_ids):
                     raise ValueError("Одно из вложений не найдено; передай файл заново")
             native_id = None
-            use_native = not model and not effort and not self.thread_modes.get(thread_id) and thread_id not in self.draft_threads
+            use_native = not (getattr(self, "guest_runtime", None) and self.guest_runtime.busy.is_set()) and not model and not effort and not self.thread_modes.get(thread_id) and thread_id not in self.draft_threads
             # Reserve/persist BEFORE queue/add. Unknown replies are reconciled, never re-added.
             with self.queue_lock, self.state_lock:
                 if len(self.queued_sends) >= 50:
@@ -2096,6 +2163,7 @@ def main(argv: list[str] | None = None) -> None:
                 self.header_deadline.cancel()
 
         def parse_request(self):
+            self.body_consumed = False
             valid = super().parse_request()
             self.header_deadline.cancel()
             return valid
@@ -2104,6 +2172,15 @@ def main(argv: list[str] | None = None) -> None:
             print("bridge:", fmt % values, flush=True)
 
         def send_json(self, status: int, payload: dict):
+            # Drain small rejected POST bodies before TLS close, otherwise clients
+            # can receive a TCP reset instead of the authentication error.
+            if status in (401, 403) and self.command == "POST" and not getattr(self, "body_consumed", False):
+                try:
+                    length = int(self.headers.get("Content-Length", "-1"))
+                    if 0 <= length <= 16384:
+                        self.read_json(16384)
+                except (ValueError, OSError):
+                    pass
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -2127,6 +2204,7 @@ def main(argv: list[str] | None = None) -> None:
             deadline.daemon = True
             deadline.start()
             try:
+                self.body_consumed = True
                 data = json.loads(self.rfile.read(length))
             finally:
                 deadline.cancel()
@@ -2134,8 +2212,148 @@ def main(argv: list[str] | None = None) -> None:
                 raise ValueError("Ожидался JSON-объект")
             return data
 
+        def guest_identity(self):
+            if not bridge.paired:
+                raise AccessError("Владелец отключил доступ")
+            bridge.guests.bind_owner(bridge.token)
+            authorization = self.headers.get("Authorization", "")
+            if not authorization.startswith("Bearer "):
+                raise AccessError("Требуется гостевая сессия")
+            return bridge.guests.authenticate(authorization[7:])
+
         def do_POST(self):
             route = urlparse(self.path).path
+            if route in ("/api/guest/send", "/api/guest/cancel"):
+                try:
+                    guest = self.guest_identity()
+                    data = self.read_json(131072)
+                    if route.endswith("/send"):
+                        if bridge.guest_runtime is None or not bridge.guest_runtime.enabled:
+                            self.send_json(503, {"error": "Гостевой исполнитель ещё не подключён", "code": "guest_execution_unavailable"})
+                            return
+                        if data.get("scopeId", "default") != "default":
+                            bridge.guest_resources.copy_workspace(guest, data.get("scopeId"))
+                        result = bridge.guest_jobs.enqueue(guest, data)
+                    else:
+                        result = bridge.guest_jobs.cancel(guest, data.get("operationId"))
+                    self.send_json(200, result)
+                except AccessError as exc:
+                    self.send_json(403, {"error": str(exc)})
+                except ValueError as exc:
+                    self.send_json(400, {"error": str(exc)})
+                except Exception:
+                    self.send_json(503, {"error": "Гостевая очередь временно недоступна"})
+                return
+            if route == "/api/guest/redeem":
+                if not bridge.paired:
+                    self.send_json(403, {"error": "Владелец отключил доступ"}); return
+                bridge.guests.bind_owner(bridge.token)
+                try:
+                    data = self.read_json(4096)
+                    self.send_json(200, bridge.guests.redeem(data.get("secret"), data.get("deviceId"), data.get("sessionToken")))
+                except AccessError as exc:
+                    self.send_json(403, {"error": str(exc)})
+                except ValueError as exc:
+                    self.send_json(400, {"error": str(exc)})
+                except Exception:
+                    self.send_json(500, {"error": "Не удалось принять приглашение"})
+                return
+            if route == "/api/guest/upload":
+                try:
+                    guest = self.guest_identity()
+                    self.send_json(200, bridge.guest_resources.own_write(guest, self.read_json(6*1024*1024)))
+                except AccessError as exc:self.send_json(403, {"error": str(exc)})
+                except ValueError as exc:self.send_json(400, {"error": str(exc)})
+                except Exception:self.send_json(503, {"error": "Загрузка файла недоступна"})
+                return
+            if route == "/api/guests/qr":
+                if not self.authorized():self.send_json(403, {"error": "Только владелец создаёт QR"}); return
+                try:
+                    data = self.read_json(4096)
+                    link = data.get("link")
+                    if not isinstance(link, str) or len(link) > 2048 or urlparse(link).scheme != "codexphone" or urlparse(link).netloc != "invite": raise ValueError("Неверная ссылка приглашения")
+                    import qrcode, io
+                    buffer = io.BytesIO()
+                    qrcode.make(link).save(buffer, format="PNG")
+                    self.send_json(200, {"pngBase64": base64.b64encode(buffer.getvalue()).decode()})
+                except ValueError as exc:self.send_json(400, {"error": str(exc)})
+                except Exception:self.send_json(503, {"error": "QR-код недоступен; отправьте ссылку"})
+                return
+            if route == "/api/guest/copy":
+                try:
+                    guest = self.guest_identity()
+                    self.send_json(200, bridge.guest_resources.prepare_copy(guest, self.read_json(4096)))
+                except AccessError as exc: self.send_json(403, {"error": str(exc)})
+                except ValueError as exc: self.send_json(400, {"error": str(exc)})
+                except Exception: self.send_json(503, {"error": "Не удалось подготовить копию"})
+                return
+            if route == "/api/guests/review":
+                if not self.authorized():
+                    self.send_json(403, {"error": "Только владелец просматривает и принимает изменения"}); return
+                try:
+                    data = self.read_json(4096)
+                    with bridge.send_lock:
+                        if bridge.guest_runtime and bridge.guest_runtime.busy.is_set():raise ValueError("Дождитесь завершения гостевой задачи")
+                        self.send_json(200, bridge.guest_resources.review(data.get("scopeId"), data.get("path"), data.get("confirmed") is True, data.get("guestHash")))
+                except ValueError as exc:self.send_json(400, {"error": str(exc)})
+                except Exception:self.send_json(503, {"error": "Просмотр изменений недоступен"})
+                return
+            if route == "/api/guests/resolve":
+                if not self.authorized():
+                    self.send_json(403, {"error": "Только владелец согласовывает расход"}); return
+                try:
+                    if bridge.guest_runtime and bridge.guest_runtime.busy.is_set():
+                        raise ValueError("Дождитесь остановки исполнителя")
+                    self.send_json(200, bridge.guest_jobs.resolve(self.read_json(4096)))
+                except ValueError as exc:
+                    self.send_json(400, {"error": str(exc)})
+                return
+            if route == "/api/guests/runtime":
+                if not self.authorized():
+                    self.send_json(403, {"error": "Только владелец управляет исполнителем"}); return
+                try:
+                    data = self.read_json(4096)
+                    if bridge.guest_runtime is None:
+                        raise ValueError("Гостевое выполнение доступно только на Linux")
+                    self.send_json(200, bridge.guest_runtime.configure(data.get("enabled")))
+                except ValueError as exc:
+                    self.send_json(400, {"error": str(exc)})
+                except Exception:
+                    self.send_json(503, {"error": "Проверка гостевой изоляции не прошла"})
+                return
+            if route in ("/api/guests/invite", "/api/guests/action"):
+                if not self.authorized():
+                    self.send_json(403, {"error": "Только владелец управляет гостями"}); return
+                try:
+                    data = self.read_json(16384)
+                    if bridge.guest_runtime and bridge.guest_runtime.enabled:bridge.guest_runtime.account_auth()
+                    quotas = data.get("quotas") or {}
+                    needs_sample = any(isinstance(q, dict) and q.get("mode") != "unlimited" for q in quotas.values())
+                    cached_snapshot = []
+                    def snapshot():
+                        if not cached_snapshot:
+                            cached_snapshot.append(bridge.guest_usage_limits() if needs_sample else {})
+                        return cached_snapshot[0]
+                    if route.endswith("/invite"):
+                        result = bridge.guests.invite(data, snapshot)
+                    else:
+                        if data.get("action") == "grant":
+                            if data.get("confirmed") is not True: raise ValueError("Подтвердите передачу содержимого выбранного ресурса")
+                            bridge.guest_resources.root(data.get("kind"), data.get("resourceId"))
+                        result = bridge.guests.change(data, snapshot)
+                        if data.get("action") == "unshare" or (data.get("action") == "grant" and data.get("right") == "view"):
+                            copies = bridge.guest_resources.shared(data.get("guestId"))["copies"]
+                            for copy in copies:
+                                if copy["kind"] == data.get("kind") and copy["resourceId"] == data.get("resourceId"):
+                                    bridge.guest_jobs.cancel_scope(data.get("guestId"), copy["id"])
+                        if data.get("action") == "revoke":
+                            bridge.guest_jobs.revoke(data.get("guestId"))
+                    self.send_json(200, result)
+                except ValueError as exc:
+                    self.send_json(400, {"error": str(exc)})
+                except Exception:
+                    self.send_json(503, {"error": "Гостевой доступ временно недоступен"})
+                return
             if route == "/api/update/prepare":
                 if self.client_address[0] != "127.0.0.1" or not hmac.compare_digest(
                     self.headers.get("Authorization", ""), "Bearer " + bridge.token):
@@ -2260,17 +2478,21 @@ def main(argv: list[str] | None = None) -> None:
                                 pass
                         bridge.pending.clear()
                         bridge._save_state()
+                bridge.guests.bind_owner(bridge.token)
                 self.send_json(200, {"revoked": True})
                 return
             if route == "/api/messages/cancel":
                 try:
-                    message_id = self.read_json(4096).get("clientMessageId")
+                    data = self.read_json(4096)
+                    message_id = data.get("clientMessageId")
                     if not isinstance(message_id, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", message_id):
                         raise ValueError("Некорректный ID сообщения")
                     self.send_json(200, bridge.dismiss_unknown_message(message_id, data.get("confirmed") is True)
                                    if data.get("dismissUnknown") else bridge.cancel_message(message_id))
                 except ValueError as exc:
                     self.send_json(400, {"error": str(exc)})
+                except (RpcError, RuntimeError, queue.Empty, OSError):
+                    self.send_json(409, {"error": "Отмена не подтверждена. Обновите очередь и повторите проверку.", "code": "cancel_outcome_unknown"})
                 return
             if route == "/api/limits/reset":
                 try:
@@ -2393,6 +2615,77 @@ def main(argv: list[str] | None = None) -> None:
             self.send_json(404, {"error": "Не найдено"})
 
         def do_GET(self):
+            route = urlparse(self.path).path
+            if route == "/api/guest/workspace":
+                try:
+                    guest = self.guest_identity()
+                    query = parse_qs(urlparse(self.path).query)
+                    self.send_json(200, bridge.guest_resources.own_read(guest, query.get("scopeId", ["default"])[0], query.get("path", [""])[0], query.get("blob", [""])[0] == "true"))
+                except AccessError as exc:self.send_json(403, {"error": str(exc)})
+                except ValueError as exc:self.send_json(400, {"error": str(exc)})
+                except Exception:self.send_json(503, {"error": "Гостевые файлы недоступны"})
+                return
+            if route == "/api/guest/models":
+                try:
+                    self.guest_identity()
+                    self.send_json(200, bridge.models())
+                except AccessError as exc:self.send_json(403, {"error": str(exc)})
+                except Exception:self.send_json(503, {"error": "Список моделей недоступен"})
+                return
+            if route in ("/api/guest/shared", "/api/guest/resource", "/api/guest/history"):
+                try:
+                    guest = self.guest_identity()
+                    query = parse_qs(urlparse(self.path).query)
+                    if route.endswith("/shared"):result = bridge.guest_resources.shared(guest)
+                    elif route.endswith("/history"):result = bridge.guest_resources.history(guest, query.get("threadId", [""])[0], query.get("before", [None])[0])
+                    else:result = bridge.guest_resources.read(guest, query.get("kind", [""])[0], query.get("resourceId", [""])[0], query.get("path", [""])[0], query.get("preview", [""])[0] == "true",query.get("blob", [""])[0] == "true")
+                    self.send_json(200, result)
+                except AccessError as exc:self.send_json(403, {"error": str(exc)})
+                except ValueError as exc:self.send_json(400, {"error": str(exc)})
+                except Exception:self.send_json(503, {"error": "Ресурс временно недоступен"})
+                return
+            if route == "/api/guests/tasks":
+                if not self.authorized():
+                    self.send_json(403, {"error": "Только владелец просматривает общую очередь"}); return
+                self.send_json(200, bridge.guest_jobs.owner_list()); return
+            if route == "/api/guest/tasks":
+                try:
+                    guest = self.guest_identity()
+                    self.send_json(200, bridge.guest_jobs.list(guest,parse_qs(urlparse(self.path).query).get("before",[None])[0]))
+                except AccessError as exc:
+                    self.send_json(401, {"error": str(exc)})
+                except Exception:
+                    self.send_json(503, {"error": "Гостевая очередь временно недоступна"})
+                return
+            if route == "/api/guest/self":
+                if not bridge.paired:
+                    self.send_json(401, {"error": "Владелец отключил доступ"}); return
+                bridge.guests.bind_owner(bridge.token)
+                try:
+                    authorization = self.headers.get("Authorization", "")
+                    if not authorization.startswith("Bearer "):
+                        raise AccessError("Требуется гостевая сессия")
+                    guest = bridge.guests.authenticate(authorization[7:])
+                    result = bridge.guest_display(guest)
+                    result["executionAvailable"] = bool(bridge.guest_runtime and bridge.guest_runtime.enabled)
+                    result["runtime"] = bridge.guest_runtime.status() if bridge.guest_runtime else {"enabled": False, "supported": False}
+                    self.send_json(200, result)
+                except AccessError as exc:
+                    self.send_json(401, {"error": str(exc)})
+                return
+            if route == "/api/guests":
+                if not self.authorized():
+                    self.send_json(403, {"error": "Только владелец управляет гостями"}); return
+                result = bridge.guests.list()
+                guests=[]
+                for item in result["guests"]:
+                    try:guests.append({**item,**bridge.guest_display(item["id"])})
+                    except AccessError:continue
+                result["guests"]=guests
+                result["executionAvailable"] = bool(bridge.guest_runtime and bridge.guest_runtime.enabled)
+                result["runtime"] = bridge.guest_runtime.status() if bridge.guest_runtime else {"enabled": False, "supported": False}
+                self.send_json(200, result)
+                return
             if urlparse(self.path).path == "/api/health":
                 if self.client_address[0] not in ("127.0.0.1", "::1") or not hmac.compare_digest(
                         self.headers.get("Authorization", ""), "Bearer " + bridge.token):
@@ -2566,6 +2859,7 @@ def main(argv: list[str] | None = None) -> None:
     finally:
         server.server_close()
         bridge.stop_worker.set()
+        if bridge.guest_runtime: bridge.guest_runtime.close()
         with bridge.rpc_lock:
             if bridge.rpc is not None:
                 bridge.rpc.close()

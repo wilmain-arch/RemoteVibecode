@@ -253,6 +253,12 @@ internal fun CompanionUi(
     onCancelTransfer: () -> Unit,
     onDisconnect: () -> Unit,
     loadImage: suspend (String) -> ByteArray,
+    onGuests: () -> Unit = {},
+    guestMode: Boolean = false,
+    sendEnabled: Boolean = true,
+    inputEnabled: Boolean = true,
+    onGuestFiles: () -> Unit = {},
+    onGuestCancelActive: () -> Unit = {},
     activeTurnId: String = "",
     taskNotifications: Boolean = false,
     onTaskNotifications: () -> Unit = {},
@@ -458,12 +464,13 @@ internal fun CompanionUi(
             onResetLimits = onResetLimits, resetMessage = resetMessage, resetLoading = resetLoading, resetPending = resetPending,
             onUpdates = onUpdates, updateAvailable = updateAvailable,
             onDevices = { projectsOpen = false; devicesOpen = true },
+            onGuests = onGuests, guestMode = guestMode,
             onDisconnect = { disconnectDialog = true },
         )
         if (disconnectDialog) AlertDialog(
             onDismissRequest = { disconnectDialog = false },
-            title = { Text("Отключить телефон?") },
-            text = { Text("Привязка к этому ПК будет удалена. Для повторного подключения понадобится QR-код.") },
+            title = { Text(if(guestMode) "Закрыть гостевой чат?" else "Отключить телефон?") },
+            text = { Text(if(guestMode) "Гостевая сессия и ваши чаты останутся сохранены." else "Привязка к этому ПК будет удалена. Для повторного подключения понадобится QR-код.") },
             confirmButton = { TextButton(onClick = { disconnectDialog = false; projectsOpen = false; onDisconnect() }) { Text("Отключить") } },
             dismissButton = { TextButton(onClick = { disconnectDialog = false }) { Text("Отмена") } },
         )
@@ -502,6 +509,7 @@ internal fun CompanionUi(
                             if (paired) {
                                 DropdownMenuItem(text = { Text("Новый чат") }, leadingIcon = { UiGlyph(UiIcon.Plus) },
                                     onClick = { chatMenuOpen = false; onNewChat(null) })
+                                if (!guestMode) {
                                 DropdownMenuItem(text = { Text("Инструменты чата") },
                                     leadingIcon = { UiGlyph(UiIcon.Files) }, onClick = { chatMenuOpen = false; controlsTurn = ""; controlsOpen = true })
                                 DropdownMenuItem(text = { Text("Изменения файлов") },
@@ -510,6 +518,9 @@ internal fun CompanionUi(
                                 leadingIcon = { UiGlyph(UiIcon.Message) }, onClick = { chatMenuOpen = false; onTaskNotifications() })
                             DropdownMenuItem(text = { Text("Субагенты") }, leadingIcon = { UiGlyph(UiIcon.Agents) },
                                     onClick = { chatMenuOpen = false; subagentsOpen = true })
+                                }
+                                if(guestMode && activeTurnId.isNotBlank()) DropdownMenuItem(text={Text("Остановить задачу")},onClick={chatMenuOpen=false;onGuestCancelActive()})
+                                if (guestMode) DropdownMenuItem(text={Text("Общие ресурсы")},onClick={chatMenuOpen=false;onGuests()})
                             }
                             DropdownMenuItem(text = { Text(if (updateAvailable) "Есть обновление" else "Обновления") },
                                 leadingIcon = { UiGlyph(UiIcon.Refresh) }, onClick = { chatMenuOpen = false; onUpdates() })
@@ -527,7 +538,7 @@ internal fun CompanionUi(
                         Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                             Column(Modifier.heightIn(max = composerContentHeight)
                                 .verticalScroll(rememberScrollState())) {
-                            BasicTextField(input, onInput,
+                            BasicTextField(input, onInput, enabled=inputEnabled,
                                 modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Сообщение для Codex" }
                                     .padding(horizontal = 10.dp, vertical = if (imeHeight > 0) 6.dp else 10.dp),
                                 textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
@@ -562,7 +573,7 @@ internal fun CompanionUi(
                                     .semantics { contentDescription = "Прикрепить файл" }) {
                                     UiGlyph(UiIcon.Plus, size = 23.dp)
                                 }
-                                TextButton(onClick = { filesOpen = true; onBrowseWorkspace(""); onFetchFiles() },
+                                TextButton(onClick = { if(guestMode) onGuestFiles() else {filesOpen = true; onBrowseWorkspace(""); onFetchFiles()} },
                                     modifier = Modifier.size(48.dp).semantics { contentDescription = "Файлы проекта" }) {
                                     UiGlyph(UiIcon.Folder, size = 22.dp)
                                 }
@@ -582,7 +593,7 @@ internal fun CompanionUi(
                                             tint = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
                                 }
-                                Button(onClick = onSend, enabled = input.isNotBlank() || attachments.isNotEmpty(),
+                                Button(onClick = onSend, enabled = sendEnabled && (input.isNotBlank() || attachments.isNotEmpty()),
                                     shape = CircleShape, contentPadding = PaddingValues(0.dp),
                                     modifier = Modifier.size(48.dp).semantics { contentDescription = "Отправить сообщение" }) {
                                     UiGlyph(UiIcon.ArrowUp, size = 22.dp)
@@ -690,7 +701,7 @@ internal fun CompanionUi(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         style = MaterialTheme.typography.labelSmall)
                                     CopyAction(line.text)
-                                    IconButton(onClick = { controlsTurn = line.turnId; controlsOpen = true }, modifier = Modifier.size(48.dp)) {
+                                    if (!guestMode) IconButton(onClick = { controlsTurn = line.turnId; controlsOpen = true }, modifier = Modifier.size(48.dp)) {
                                         UiGlyph(UiIcon.More, "Действия с этим сообщением", 20.dp)
                                     }
                                 }
@@ -826,7 +837,7 @@ internal fun CompanionUi(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     if (item.nativeSubmissionId.isNotBlank() && item.deliveredTurnId.isBlank()) Text("Корректировка этой очереди недоступна в Desktop", style = MaterialTheme.typography.labelSmall)
                                     Row {
-                                        if (item.acceptedByBridge && !item.cancelRequested && item.deliveredTurnId.isBlank() && item.nativeSubmissionId.isBlank() && item.queueState != "checking")
+                                        if (!guestMode && item.acceptedByBridge && !item.cancelRequested && item.deliveredTurnId.isBlank() && item.nativeSubmissionId.isBlank() && item.queueState != "checking")
                                             TextButton(onClick = { onSteerQueued(item) }) {
                                                 Text("Корректировать сейчас")
                                             }

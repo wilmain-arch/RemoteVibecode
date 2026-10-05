@@ -80,6 +80,8 @@ internal fun ProjectsScreen(
     onUpdates: () -> Unit, updateAvailable: Boolean,
     onDevices: () -> Unit,
     onDisconnect: () -> Unit,
+    onGuests: () -> Unit = {},
+    guestMode: Boolean = false,
 ) {
     val context = LocalContext.current
     fun chatCount(value: Int): String = when {
@@ -179,7 +181,8 @@ internal fun ProjectsScreen(
                         UiGlyph(UiIcon.Refresh, size = 20.dp)
                     }
                     TextButton(onClick = { settingsOpen = false; onUpdates() }) { Text(if (updateAvailable) "Обновить приложение" else "Обновления") }
-                    TextButton(onClick = { settingsOpen = false; onDevices() }) { Text("ADB") }
+                    TextButton(onClick = { settingsOpen = false; onGuests() }) { Text(if(guestMode) "Общие ресурсы" else "Гостевой доступ") }
+                    if(!guestMode) TextButton(onClick = { settingsOpen = false; onDevices() }) { Text("ADB") }
                     TextButton(onClick = { settingsOpen = false; onDisconnect() }) { Text("Отключить") }
                 }
         }
@@ -255,7 +258,11 @@ internal fun ProjectsScreen(
                     Modifier.padding(horizontal = UiSpace.screen, vertical = 4.dp),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error)
-                Surface(Modifier.fillMaxWidth().padding(horizontal = UiSpace.screen, vertical = 4.dp),
+                if(guestMode) Column(Modifier.fillMaxWidth().padding(horizontal=UiSpace.screen,vertical=12.dp)) {
+                    Text("Выделенная квота",style=MaterialTheme.typography.titleMedium)
+                    Text(limitsError,style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                if(!guestMode) Surface(Modifier.fillMaxWidth().padding(horizontal = UiSpace.screen, vertical = 4.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant,
                     shape = RoundedCornerShape(18.dp)) {
                     Column(Modifier.padding(horizontal = 16.dp, vertical = if (compactLimits) 0.dp else 13.dp)) {
@@ -294,7 +301,7 @@ internal fun ProjectsScreen(
                                 else limitsError.ifBlank { "Данные о лимитах недоступны" },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            TextButton(onClick = { resetAttempt = java.util.UUID.randomUUID().toString() },
+                            if(!guestMode) TextButton(onClick = { resetAttempt = java.util.UUID.randomUUID().toString() },
                                 enabled = !resetLoading && (resetPending || (usageLimits?.resetCredits ?: 0) > 0)) {
                                 Text(if (resetLoading) "Сбрасываю…" else if (resetPending) "Проверить результат сброса" else "Сбросить лимиты · кредитов: ${usageLimits?.resetCredits?.toString() ?: "нет данных"}")
                             }
@@ -378,7 +385,7 @@ internal fun ProjectsScreen(
                         }
                         var actionsOpen by rememberSaveable(thread.id) { mutableStateOf(false) }
                         Box {
-                            IconButton(onClick = { actionsOpen = true }) { UiGlyph(UiIcon.More, "Действия чата: ${thread.title}", 22.dp) }
+                            if(!guestMode) IconButton(onClick = { actionsOpen = true }) { UiGlyph(UiIcon.More, "Действия чата: ${thread.title}", 22.dp) }
                             DropdownMenu(expanded = actionsOpen, onDismissRequest = { actionsOpen = false }) {
                                 DropdownMenuItem(text = { Text("Переместить чат") }, leadingIcon = { UiGlyph(UiIcon.Folder) },
                                     onClick = { actionsOpen = false; moveCandidate = thread })

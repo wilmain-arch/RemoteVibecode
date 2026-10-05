@@ -283,6 +283,22 @@ class MainActivity : ComponentActivity() {
 private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: String = "", notificationNonce: Int = 0) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("companion", Context.MODE_PRIVATE) }
+    val guestProfiles = remember { context.getSharedPreferences("guest-profiles", Context.MODE_PRIVATE) }
+    var ownerSetup by rememberSaveable { mutableStateOf(false) }
+    var dismissedInvite by rememberSaveable { mutableStateOf("") }
+    var selectedGuestUri by rememberSaveable { mutableStateOf("") }
+    if(selectedGuestUri.isNotBlank()) {
+        GuestInvitationScreen(Uri.parse(selectedGuestUri)) {selectedGuestUri=""}
+        return
+    }
+    if (externalPairingUri?.host == "invite" && externalPairingUri.toString() != dismissedInvite) {
+        GuestInvitationScreen(externalPairingUri) { dismissedInvite = externalPairingUri.toString() }
+        return
+    }
+    if (readSavedToken(context, prefs).isBlank() && !ownerSetup && guestProfiles.all.isNotEmpty()) {
+        GuestConnectionsScreen(onOpen={selectedGuestUri=it},onOwnerSetup={ownerSetup=true})
+        return
+    }
     var taskNotifications by remember { mutableStateOf(prefs.getBoolean("taskNotifications", false)) }
     var activeTurnId by remember { mutableStateOf("") }
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -293,6 +309,7 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
     val scope = rememberCoroutineScope()
     val updates = remember { AppUpdates(context.applicationContext, scope) }
     var updatesOpen by rememberSaveable { mutableStateOf(false) }
+    var guestsOpen by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(updates) {
         while (true) {
             updates.check(manual = false)
@@ -1124,7 +1141,7 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
         }
     }
     LaunchedEffect(externalPairingUri) {
-        if (externalPairingUri != null) {
+        if (externalPairingUri != null && externalPairingUri.host == "pair") {
             runCatching { acceptPair(externalPairingUri) }
                 .onFailure { status = "Не удалось подключиться: ${it.message}" }
         }
@@ -1196,7 +1213,18 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
     }
     androidx.compose.runtime.CompositionLocalProvider(LocalImageScope provides "$host:$certificatePin:$workspaceRevision") {
     MaterialTheme(colorScheme = if (darkTheme) darkPalette else lightPalette, typography = appTypography) {
-        if (updatesOpen) UpdatesScreen(updates, onClose = { updatesOpen = false })
+        if (guestsOpen) GuestAccessScreen(host, certificatePin, { guestsOpen = false }, onOpenGuest={selectedGuestUri=it}) { path, payload ->
+            withReachableHost { root -> withContext(Dispatchers.IO) {
+                val builder = Request.Builder().url("$root/api/$path").header("Authorization", "Bearer $token")
+                if (payload != null) builder.post(payload.toString().toRequestBody("application/json".toMediaType()))
+                client.newCall(builder.build()).execute().use { response ->
+                    val result = JSONObject(response.body?.string().orEmpty())
+                    if (!response.isSuccessful) error(result.optString("error", "Ошибка гостевого доступа"))
+                    result
+                }
+            } }
+        }
+        else if (updatesOpen) UpdatesScreen(updates, onClose = { updatesOpen = false })
         else CompanionUi(
             activeTurnId = activeTurnId,
             taskNotifications = taskNotifications,
@@ -1214,6 +1242,7 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
                 }
             },
             onUpdates = { updatesOpen = true },
+            onGuests = { guestsOpen = true },
             updateAvailable = updates.update != null,
             themeMode = themeMode,
             onThemeMode = { value ->
@@ -1264,7 +1293,10 @@ private fun CompanionScreen(externalPairingUri: Uri?, notificationThreadId: Stri
                 GmsBarcodeScanning.getClient(context).startScan()
                     .addOnSuccessListener { barcode ->
                         scope.launch {
-                            runCatching { acceptPair(Uri.parse(barcode.rawValue ?: error("QR-код пуст"))) }
+                            runCatching {
+                                val scanned=Uri.parse(barcode.rawValue ?: error("QR-код пуст"))
+                                if(scanned.scheme=="codexphone"&&scanned.host=="invite") selectedGuestUri=scanned.toString() else acceptPair(scanned)
+                            }
                                 .onFailure { status = "Не удалось подключиться: " + it.message }
                         }
                     }
@@ -1622,13 +1654,30 @@ internal suspend fun downloadFile(
     } } finally { staged.delete(); cancellation.dispose(); activeCall.compareAndSet(call, null) }
 }
 
+internal fun retryableReadFailure(failure: java.io.IOException): Boolean {
+    if (failure is javax.net.ssl.SSLHandshakeException || failure is javax.net.ssl.SSLPeerUnverifiedException) return false
+    return failure is java.io.EOFException || failure is java.net.SocketException ||
+        failure.message.orEmpty().contains("unexpected end of stream", ignoreCase = true) ||
+        failure.message.orEmpty().contains("stream was reset", ignoreCase = true)
+}
+
 internal fun requestJson(client: OkHttpClient, url: String, token: String): JSONObject {
+    // GET only. Mutations retain their existing operationId/reconciliation flow.
     val request = Request.Builder().url(url).header("Authorization", "Bearer $token").get().build()
-    return client.newCall(request).execute().use { response ->
-        val json = JSONObject(response.body?.string().orEmpty())
-        if (!response.isSuccessful) error(json.optString("error", "Запрос не удался"))
-        json
+    for (attempt in 0..1) {
+        try {
+            return client.newCall(request).execute().use { response ->
+                val json = JSONObject(response.body?.string().orEmpty())
+                if (!response.isSuccessful) error(json.optString("error", "Запрос не удался"))
+                json
+            }
+        } catch (failure: java.io.IOException) {
+            if (!retryableReadFailure(failure)) throw failure
+            if (attempt == 1) throw java.io.IOException("Ответ ПК оборвался. Повторите подключение; принятая задача продолжает выполняться на ПК.", failure)
+            client.connectionPool.evictAll()
+        }
     }
+    error("Не удалось получить ответ ПК")
 }
 
 internal fun pinnedClient(fingerprintInput: String): OkHttpClient {

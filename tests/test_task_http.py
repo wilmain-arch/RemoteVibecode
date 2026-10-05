@@ -72,6 +72,15 @@ class TaskHttpTests(unittest.TestCase):
                         if time.monotonic()>deadline:raise
                         time.sleep(.05)
                 self.assertEqual(status['activeTurnId'],'fixture-turn')
+                cancelled=call('messages/cancel',{'clientMessageId':'synthetic-cancel-fixture'})
+                self.assertEqual(cancelled['status'],'cancelled')
+                self.assertEqual(call('messages/cancel',{'clientMessageId':'synthetic-cancel-fixture'}),cancelled)
+                with self.assertRaises(urllib.error.HTTPError) as invalid_cancel:
+                    call('messages/cancel',{'clientMessageId':'../invalid'})
+                self.assertEqual(invalid_cancel.exception.code,400)
+                invalid_cancel.exception.close()
+                self.assertIsInstance(call('capabilities'),dict)
+
                 with self.assertRaises(urllib.error.HTTPError) as error: call('requests?threadId=fixture-root',authorized=False)
                 self.assertEqual(error.exception.code,401)
                 prompt=call('requests?threadId=fixture-root')['requests'][0]

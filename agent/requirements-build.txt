@@ -3,3 +3,4 @@ cryptography>=44,<50
 Pillow>=11,<13
 qrcode>=8,<9
 PySide6>=6.8,<7
+websockets>=14,<18

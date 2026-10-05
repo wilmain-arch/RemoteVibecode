@@ -198,6 +198,8 @@ class Controls:
         if handler is None:
             raise ValueError('Неизвестное действие')
         with guard, self.lock, b.rpc_session() as rpc:
+            if getattr(b, 'guest_runtime', None) and b.guest_runtime.busy.is_set() and action in ('review','queue-add','queue-start','goal-status'):
+                raise ValueError('Гостевая задача выполняется. Дождитесь её завершения.')
             return handler(rpc, tid, data, action)
 
     def _rename(self, rpc, tid, data, action):
